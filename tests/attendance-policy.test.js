@@ -25,7 +25,7 @@ test('database prevents duplicate attendance for a student, class and date', () 
 
 test('student QR tokens remain stable for one student/class pair', () => {
   assert.match(sql, /unique\s*\(student_id,\s*schedule_id\)/i);
-  assert.match(sql, /'ATTENDX-'\s*\|\|\s*encode\(gen_random_bytes\(16\), 'hex'\)/i);
+  assert.match(sql, /'ATTENDX-'\s*\|\|\s*replace\(gen_random_uuid\(\)::text, '-', ''\)/i);
   assert.match(sql, /on conflict \(student_id, schedule_id\) do update\s+set token = existing_qr\.token/i);
 });
 
@@ -58,6 +58,8 @@ test('public account registration cannot create teacher accounts without a priva
 test('every enrollment automatically creates one persistent student/class QR token', () => {
   assert.match(autoQrSql, /create trigger enrollments_auto_create_qr\s+after insert on public\.enrollments\s+for each row\s+execute function public\.attendx_auto_create_enrollment_qr\(\)/i);
   assert.match(autoQrSql, /new\.student_id[\s\S]*new\.schedule_id[\s\S]*ATTENDX-/i);
+  assert.match(autoQrSql, /replace\(gen_random_uuid\(\)::text, '-', ''\)/i);
+  assert.doesNotMatch(autoQrSql, /gen_random_bytes/i);
   assert.match(autoQrSql, /select\s+e\.student_id,\s*e\.schedule_id[\s\S]*from public\.enrollments e[\s\S]*on conflict \(student_id, schedule_id\) do nothing/i);
 });
 
@@ -72,6 +74,14 @@ test('face attendance is independent of QR token generation', () => {
   assert.match(app, /You do not need to generate a QR pass for face attendance/);
   assert.match(app, /functions\.invoke\('verify-face'/);
   assert.match(app, /saveAttendanceViaRpc\(candidateStudentId, scheduleId, 'FACE'\)/);
+});
+
+test('face scan rejects multiple visible faces and refuses ambiguous biometric matches', () => {
+  assert.match(app, /detectAllFaces\(video/);
+  assert.match(app, /detections\.length > 1/);
+  assert.match(app, /More than one face detected\. Only the student registering should be visible\./);
+  assert.match(faceFunction, /scored\[1\]\.distance - scored\[0\]\.distance < 0\.025/);
+  assert.match(faceFunction, /The face match is ambiguous/);
 });
 
 test('fingerprint attendance is not reported successful without hardware integration', () => {

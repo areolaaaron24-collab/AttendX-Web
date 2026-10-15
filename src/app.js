@@ -65,6 +65,7 @@ let faceStream = null;
 let faceRegStream = null;
 let faceDetectionLoop = false;
 let faceModelsReady = false;
+let faceModelsPromise = null;
 let fingerprintPort = null;
 let fingerprintReader = null;
 let fingerprintWriter = null;
@@ -375,12 +376,22 @@ async function startQrCamera() {
 }
 async function loadFaceModels() {
   if (faceModelsReady) return;
-  await Promise.all([
-    faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_PATH),
-    faceapi.nets.faceLandmark68TinyNet.loadFromUri(FACE_MODEL_PATH),
-    faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_PATH)
-  ]);
-  faceModelsReady = true;
+  // Share one model-loading request between camera startup and Capture Face.
+  // Without this promise, tapping Capture while startup is loading can launch
+  // duplicate downloads and make mobile registration feel frozen.
+  if (!faceModelsPromise) {
+    faceModelsPromise = Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_PATH),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(FACE_MODEL_PATH),
+      faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_PATH)
+    ]).then(() => {
+      faceModelsReady = true;
+    }).catch(error => {
+      faceModelsPromise = null;
+      throw error;
+    });
+  }
+  return faceModelsPromise;
 }
 async function startFaceCamera() {
   const user = currentUser();
@@ -747,7 +758,7 @@ async function startFingerprintAttendanceScan() {
     fingerprintScanActive = false;
   }
 }
-async function waitForLiveCameraFrame(video, timeoutMs = 15000) {
+async function waitForLiveCameraFrame(video, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!video.isConnected) throw new Error('The face preview was closed before the camera started.');
@@ -796,19 +807,38 @@ async function startFaceRegistrationCamera() {
     video.style.webkitTransform = 'none';
     if (status) {
       status.hidden = false;
-      status.textContent = 'Opening camera…';
+      status.textContent = 'Opening camera… this may take a few seconds.';
     }
 
-    // The caller starts this function directly from the Register Face tap.
-    // That is more reliable for mobile browsers than starting via setTimeout.
-    faceRegStream = await navigator.mediaDevices.getUserMedia({
+    // Load the face models while the camera starts, rather than making the
+    // student wait for one step to finish before the other can begin.
+    const modelsReadyPromise = loadFaceModels().catch(modelError => {
+      console.error('Face model preloading failed:', modelError);
+      return modelError;
+    });
+
+    // A smaller stream is noticeably lighter on phones and is sufficient for
+    // the 320px TinyFaceDetector input used below.
+    const cameraConstraints = {
       audio: false,
       video: {
         facingMode: { ideal: 'user' },
-        width: { ideal: 640 },
-        height: { ideal: 480 }
+        width: { ideal: 480 },
+        height: { ideal: 360 },
+        frameRate: { ideal: 15, max: 24 }
       }
-    });
+    };
+    try {
+      faceRegStream = await navigator.mediaDevices.getUserMedia(cameraConstraints);
+    } catch (firstCameraError) {
+      // Some mobile browsers reject a frame-rate constraint; retry once with
+      // plain front-camera constraints rather than leaving the screen stuck.
+      if (!['OverconstrainedError', 'ConstraintNotSatisfiedError'].includes(firstCameraError?.name)) throw firstCameraError;
+      faceRegStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'user' }, width: { ideal: 480 }, height: { ideal: 360 } }
+      });
+    }
 
     if (!video.isConnected) {
       for (const track of faceRegStream.getTracks()) track.stop();
@@ -833,12 +863,12 @@ async function startFaceRegistrationCamera() {
     }
     toast('Live camera preview is ready. Face the camera in good lighting, then tap Capture Face.');
 
-    // Model loading must not hide an otherwise-working camera preview on a phone.
-    try {
-      await loadFaceModels();
-    } catch (modelError) {
-      console.error('Face model loading failed:', modelError);
-      toast('The camera preview is working, but face-recognition models could not load. Check your internet connection, then try Capture Face again.', 6000);
+    // Camera preview and face-model downloads now run in parallel. The preview
+    // is shown as soon as video frames arrive; the shared promise avoids a
+    // second model download if Capture Face is tapped while loading continues.
+    const modelError = await modelsReadyPromise;
+    if (modelError) {
+      toast('The camera preview is working, but face-recognition models could not load. Check your internet connection, then tap Capture Face to retry.', 6000);
     }
   } catch (error) {
     console.error('Face registration camera failed:', error);
@@ -870,10 +900,22 @@ async function captureAndSaveFace() {
     await waitForLiveCameraFrame(video, 8000);
     await loadFaceModels();
     const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.6 })).withFaceLandmarks(true).withFaceDescriptors();
-    if (detections.length === 0) return toast('No clear face found. Face the camera, improve lighting, and retry.');
-    if (detections.length > 1) return toast('More than one face detected. Only the student registering should be visible.');
+    if (detections.length === 0) {
+      if (captureButton) { captureButton.disabled = false; captureButton.textContent = 'Capture Face'; }
+      toast('No clear face found. Face the camera, improve lighting, and tap Capture Face again.');
+      return;
+    }
+    if (detections.length > 1) {
+      if (captureButton) { captureButton.disabled = false; captureButton.textContent = 'Capture Face'; }
+      toast('More than one face detected. Keep only the student registering in view, then tap Capture Face again.');
+      return;
+    }
     const detection = detections[0];
-    if (!detection?.descriptor) return toast('No clear face found. Face the camera, improve lighting, and retry.');
+    if (!detection?.descriptor) {
+      if (captureButton) { captureButton.disabled = false; captureButton.textContent = 'Capture Face'; }
+      toast('No clear face found. Face the camera, improve lighting, and tap Capture Face again.');
+      return;
+    }
     const { data: saved, error } = await requireCloud().functions.invoke('register-face', { body: { descriptor: Array.from(detection.descriptor) } });
     if (error || saved?.error || !saved?.ok) throw await readFunctionError(error, saved);
     faceRegistered = true;

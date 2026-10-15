@@ -313,7 +313,7 @@ begin
   -- Match the active main2.py flow: one persistent random QR token per student/class.
   -- Class and teacher ownership are verified by the server when a teacher scans it.
   insert into public.qr_tokens as existing_qr(student_id, schedule_id, token)
-  values (auth.uid(), p_schedule_id, 'ATTENDX-' || encode(gen_random_bytes(16), 'hex'))
+  values (auth.uid(), p_schedule_id, 'ATTENDX-' || replace(gen_random_uuid()::text, '-', ''))
   on conflict (student_id, schedule_id) do update
     set token = existing_qr.token
   returning token into v_token;

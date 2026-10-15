@@ -96,6 +96,13 @@ test('face scan rejects multiple visible faces and refuses ambiguous biometric m
   assert.match(faceFunction, /The face match is ambiguous/);
 });
 
+test('fingerprint Edge Functions pin a published stable Supabase JS version', () => {
+  assert.match(fingerprintRegisterFunction, /npm:@supabase\/supabase-js@2\.117\.3/);
+  assert.match(fingerprintVerifyFunction, /npm:@supabase\/supabase-js@2\.117\.3/);
+  assert.doesNotMatch(fingerprintRegisterFunction, /npm:@supabase\/supabase-js@2(?:['"])/);
+  assert.doesNotMatch(fingerprintVerifyFunction, /npm:@supabase\/supabase-js@2(?:['"])/);
+});
+
 test('AS608/R307 fingerprint workflow uses live serial commands and server verification', () => {
   assert.match(app, /navigator\.serial\.requestPort\(\)/);
   assert.match(app, /sendFingerprintCommand\(\[0x01\]\)/);

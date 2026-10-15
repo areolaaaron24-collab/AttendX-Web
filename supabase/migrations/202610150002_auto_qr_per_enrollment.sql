@@ -1,4 +1,4 @@
--- Automatically create one persistent QR token for each enrolled student and class.
+﻿-- Automatically create one persistent QR token for each enrolled student and class.
 -- Token rows remain private to their student via qr_tokens RLS.
 -- This migration also backfills existing enrollments so students do not need to press "Generate QR".
 
@@ -13,7 +13,7 @@ begin
   values (
     new.student_id,
     new.schedule_id,
-    'ATTENDX-' || encode(gen_random_bytes(16), 'hex')
+    'ATTENDX-' || replace(gen_random_uuid()::text, '-', '')
   )
   on conflict (student_id, schedule_id) do nothing;
 
@@ -34,6 +34,7 @@ insert into public.qr_tokens (student_id, schedule_id, token)
 select
   e.student_id,
   e.schedule_id,
-  'ATTENDX-' || encode(gen_random_bytes(16), 'hex')
+  'ATTENDX-' || replace(gen_random_uuid()::text, '-', '')
 from public.enrollments e
 on conflict (student_id, schedule_id) do nothing;
+

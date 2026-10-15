@@ -380,9 +380,18 @@ async function startFaceCamera() {
       if (!faceDetectionLoop || !faceStream || video.readyState < 2) return;
       try {
         if (!cameraBusy && Date.now() - lastFaceAttemptAt > 1300) {
-          const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.58 })).withFaceLandmarks(true).withFaceDescriptor();
+          lastFaceAttemptAt = Date.now();
+          const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.58 })).withFaceLandmarks(true).withFaceDescriptors();
+          if (detections.length > 1) {
+            const message = 'Multiple faces detected. Please keep only one student in the camera frame.';
+            if (message !== lastFaceNoticeMessage || Date.now() - lastFaceNoticeAt > 8000) {
+              lastFaceNoticeMessage = message;
+              lastFaceNoticeAt = Date.now();
+              toast(message);
+            }
+          }
+          const detection = detections.length === 1 ? detections[0] : null;
           if (detection?.descriptor) {
-            lastFaceAttemptAt = Date.now();
             cameraBusy = true;
             let candidateStudentId = null;
             try {
@@ -461,7 +470,10 @@ async function captureAndSaveFace() {
   const video = $('#face-registration-video');
   if (!video || !faceRegStream) return toast('Start the camera first.');
   try {
-    const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.6 })).withFaceLandmarks(true).withFaceDescriptor();
+    const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.6 })).withFaceLandmarks(true).withFaceDescriptors();
+    if (detections.length === 0) return toast('No clear face found. Face the camera, improve lighting, and retry.');
+    if (detections.length > 1) return toast('More than one face detected. Only the student registering should be visible.');
+    const detection = detections[0];
     if (!detection?.descriptor) return toast('No clear face found. Face the camera, improve lighting, and retry.');
     const { data: saved, error } = await requireCloud().functions.invoke('register-face', { body: { descriptor: Array.from(detection.descriptor) } });
     if (error || saved?.error || !saved?.ok) throw await readFunctionError(error, saved);

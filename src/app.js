@@ -649,6 +649,16 @@ async function registerStudentFingerprint(studentId) {
     if (!slot || slot > maxSlot) throw new Error('Fingerprint storage is full. Remove an old reader template or use another reader.');
     await waitForFingerprintImage('Place the student’s finger on the sensor.');
     expectFingerprintSuccess(await sendFingerprintCommand([0x02, 0x01]), 'converting the first fingerprint sample');
+    const duplicateSearch = await sendFingerprintCommand([0x04, 0x01, 0x00, 0x00, (fingerprintCapacity >> 8) & 0xFF, fingerprintCapacity & 0xFF]);
+    if (duplicateSearch[0] === 0 && duplicateSearch.length >= 5) {
+      const matchedSlot = (duplicateSearch[1] << 8) | duplicateSearch[2];
+      const matchedMapping = (mappings || []).find(row => Number(row.sensor_slot) === matchedSlot);
+      if (!matchedMapping) throw new Error('This finger already matches an unmapped sensor slot. Do not assign it to another student; ask the administrator to reconcile the reader slots.');
+      if (matchedMapping.student_id !== studentId) throw new Error('This finger already matches a fingerprint registered to another student. AttendX blocked duplicate fingerprint registration.');
+      if (!existing || Number(existing.sensor_slot) !== matchedSlot) throw new Error('This student’s finger already matches a different sensor slot. Refresh the roster and use the existing mapped slot.');
+    } else if (duplicateSearch[0] !== 0x09 && duplicateSearch[0] !== 0x02) {
+      throw new Error(fingerprintStatusText(duplicateSearch[0]));
+    }
     await waitForFingerRemoval(true);
     await waitForFingerprintImage('Place the same finger on the sensor a second time.');
     expectFingerprintSuccess(await sendFingerprintCommand([0x02, 0x02]), 'converting the second fingerprint sample');
@@ -949,7 +959,7 @@ function renderTeacherCenter(user) {
     const record = getRecord(student.id, schedule.id, date);
     return `<tr data-roster-student="${esc(student.id)}"><td><span class="row-primary">${esc(fullName(student))}</span><br><span class="muted">${esc(student.accountId)}</span></td><td>${esc(`${student.course} · ${student.year} / ${student.section}`)}</td><td>${record ? badge(record.status) : `<span class="status">NOT RECORDED</span>`}</td><td>${record ? `${esc(record.time)} · ${esc(record.method)}` : '—'}</td><td><button class="btn ghost small" data-action="enroll-fingerprint" data-id="${esc(student.id)}">Enroll Fingerprint</button></td></tr>`;
   }).join('');
-  return `${pageHead('Attendance Center', 'Select a class, then start the QR or face camera to record attendance.', '')}<div class="attendance-tools"><section class="panel"><div class="panel-head"><div><h2>Attendance setup</h2><div class="panel-sub">Uses the live Asia/Manila clock and the 15-minute attendance rule.</div></div></div><div class="field"><label>Class schedule</label><select id="teacher-schedule-select">${schedules.map(s=>`<option value="${esc(s.id)}" ${s.id===selectedTeacherSchedule?'selected':''}>${esc(s.subject)} · ${esc(s.course)} ${esc(s.year)}-${esc(s.section)} · ${esc(s.day)}</option>`).join('')}</select></div>
+  return `${pageHead('Attendance Center', 'Select a class, then verify students with QR, face recognition or a compatible fingerprint reader.', '')}<div class="attendance-tools"><section class="panel"><div class="panel-head"><div><h2>Attendance setup</h2><div class="panel-sub">Uses the live Asia/Manila clock and the 15-minute attendance rule.</div></div></div><div class="field"><label>Class schedule</label><select id="teacher-schedule-select">${schedules.map(s=>`<option value="${esc(s.id)}" ${s.id===selectedTeacherSchedule?'selected':''}>${esc(s.subject)} · ${esc(s.course)} ${esc(s.year)}-${esc(s.section)} · ${esc(s.day)}</option>`).join('')}</select></div>
     <div class="notice" style="margin-top:14px">Choose the correct class. Attendance is checked against the selected teacher, class enrollment, current server time, and any existing record for today.</div>
     <div class="class-actions"><button class="btn" data-action="start-qr-camera" ${schedule?'':'disabled'}>Start QR Camera</button><button class="btn secondary" data-action="start-face-camera" ${schedule?'':'disabled'}>Start Face Camera</button><button class="btn secondary" data-action="start-fingerprint-scan" ${schedule?'':'disabled'}>Start Fingerprint Scan</button><button class="btn ghost" data-action="stop-camera">Stop Camera / Reader</button></div>
     <div class="class-actions"><button class="btn secondary" data-action="refresh-roster">Refresh roster</button><button class="btn danger" data-action="mark-no-shows" ${schedule?'':'disabled'}>Mark no-shows ABSENT</button></div>

@@ -473,27 +473,6 @@ async function captureAndSaveFace() {
     toast('Face template saved to your AttendX account. You can update it from Profile.');
   } catch (error) { console.error(error); toast(`Could not save face data: ${error.message || error}`); }
 }
-async function handleGenerateQr(scheduleId) {
-  const user = currentUser();
-  if (!user || user.role !== 'student') return toast('Log in to a Student account to generate a QR pass.');
-  if (!data.enrollments.some(item => item.studentId === user.id && item.scheduleId === scheduleId)) {
-    return toast('Join this class from Browse Classes before generating its QR pass.');
-  }
-  try {
-    const { data: token, error } = await requireCloud().rpc('get_or_create_student_qr_token', { p_schedule_id: scheduleId });
-    if (error) throw error;
-    if (typeof token !== 'string' || !token.trim()) {
-      throw new Error('The QR service returned no token. Check that the AttendX database migration is applied, then try again.');
-    }
-    data.qrTokens[`${user.id}:${scheduleId}`] = token.trim();
-    renderApp();
-    window.setTimeout(drawQrCodes, 50);
-    toast('Scannable QR pass created. Ask your teacher to scan it with the QR camera.');
-  } catch (error) {
-    console.error('AttendX QR generation failed:', error);
-    toast(`Could not generate QR pass: ${error.message || String(error)}`, 5500);
-  }
-}
 function drawQrCodes() {
   document.querySelectorAll('canvas[data-qr-token]').forEach(canvas => {
     const token = canvas.dataset.qrToken;
@@ -621,10 +600,10 @@ function renderQr(user) {
     const key = `${user.id}:${schedule.id}`;
     const token = data.qrTokens[key] || '';
     return `<div class="panel qr-pass-panel"><div class="panel-head"><div><h2>${esc(schedule.subject)}</h2><div class="panel-sub">${esc(schedule.course)} · ${esc(schedule.year)} / ${esc(schedule.section)}</div></div>${badge('ACTIVE')}</div>
-      ${token ? `<canvas class="real-qr-canvas" data-qr-token="${esc(token)}" aria-label="Scannable student QR pass"></canvas><div class="token">${esc(token)}</div><div class="class-actions" style="justify-content:center"><button class="btn secondary small" data-action="copy-token" data-token="${esc(token)}">Copy token</button><button class="btn small" data-action="download-qr" data-id="${esc(schedule.id)}">Download QR</button></div>` : `<div class="qr-box">ATTENDX<br>QR PASS</div><div class="class-actions"><button class="btn" data-action="generate-qr" data-id="${esc(schedule.id)}">Generate QR Pass</button></div>`}
-      <p class="panel-sub" style="text-align:center;margin-top:11px">Show this QR to your teacher while their Attendance Center camera is running.</p></div>`;
+      ${token ? `<canvas class="real-qr-canvas" data-qr-token="${esc(token)}" aria-label="Scannable student QR pass"></canvas><div class="token">${esc(token)}</div><div class="class-actions" style="justify-content:center"><button class="btn secondary small" data-action="copy-token" data-token="${esc(token)}">Copy token</button><button class="btn small" data-action="download-qr" data-id="${esc(schedule.id)}">Download QR</button></div>` : `<div class="qr-box">ATTENDX<br>QR PASS</div><div class="notice warning">Your pass is generated automatically when you enroll in this class. If it has not appeared yet, refresh your QR passes.</div><div class="class-actions"><button class="btn secondary" data-action="refresh-qr-passes">Refresh QR Pass</button></div>`}
+      <p class="panel-sub" style="text-align:center;margin-top:11px">Show this QR to your teacher while their Attendance Center camera is running. Face attendance does not require a QR pass.</p></div>`;
   }).join('');
-  return `${pageHead('QR Pass', 'Generate your secure, scannable class pass and show it to your teacher.', '')}<div class="notice" style="margin-bottom:15px">Each QR pass is linked to your account and class. The teacher must select the matching class and scan it with the QR camera.</div><div class="content-grid">${cards || `<div class="empty"><strong>No class passes yet</strong>Browse Classes and enroll in the matching course/year/section first.</div>`}</div>`;
+  return `${pageHead('QR Pass', 'Your QR pass is created automatically for every class you join.', '')}<div class="notice" style="margin-bottom:15px">AttendX creates one persistent QR pass per student and class enrollment. You do not need to press Generate QR. If you joined a class before this update, refresh the QR Pass page to load its automatically-created pass.</div><div class="content-grid">${cards || `<div class="empty"><strong>No class passes yet</strong>Browse Classes and join the matching course/year/section. A QR pass will be created automatically after you join.</div>`}</div>`;
 }
 function renderProfile(user) {
   return `${pageHead('My Profile', 'Review and edit your profile information. Account ID and password are not editable here.', '')}<div class="profile-grid"><section class="panel"><div class="panel-head"><div><h2>Personal details</h2><div class="panel-sub">Changes are saved to the shared AttendX database.</div></div></div><form data-form="profile"><div class="form-grid"><div class="field"><label>First name *</label><input name="firstName" value="${esc(user.firstName)}" required maxlength="45"></div><div class="field"><label>Last name *</label><input name="lastName" value="${esc(user.lastName)}" required maxlength="45"></div><div class="field"><label>Middle name</label><input name="middleName" value="${esc(user.middleName)}" maxlength="45"></div><div class="field"><label>Suffix / extension</label><input name="suffix" value="${esc(user.suffix)}" maxlength="15"></div><div class="field"><label>Sex</label><select name="sex"><option ${user.sex==='Female'?'selected':''}>Female</option><option ${user.sex==='Male'?'selected':''}>Male</option></select></div>${user.role==='student'?`<div class="field"><label>Course</label><input name="course" value="${esc(user.course)}" required maxlength="30"></div><div class="field"><label>Year</label><select name="year">${['1ST','2ND','3RD','4TH'].map(y=>`<option ${user.year===y?'selected':''}>${y}</option>`).join('')}</select></div><div class="field"><label>Section</label><input name="section" value="${esc(user.section)}" required maxlength="10"></div>`:`<div class="field"><label>Department</label><input name="department" value="${esc(user.department||'')}" maxlength="60"></div><div class="field"><label>Office</label><input name="office" value="${esc(user.office||'')}" maxlength="60"></div>`}</div><div class="form-actions"><button class="btn" type="submit">Save profile</button></div></form></section><aside class="profile-banner"><span class="avatar">${esc(initials(user))}</span><h2>${esc(fullName(user))}</h2><p>${esc(roleName(user.role))} account<br>${esc(user.accountId)}<br>${user.role==='student'?`${esc(user.course)} · ${esc(user.year)} Year · Section ${esc(user.section)}`:esc(user.department||'Teacher')}</p>${user.role==='student'?`<div class="face-profile-status ${faceRegistered?'is-registered':''}"><span class="dot"></span>${faceRegistered?'Face recognition registered':'Face recognition not registered'}</div><button class="btn secondary full-width" style="margin-top:12px" data-action="register-face">${faceRegistered?'Update face recognition':'Register face recognition'}</button><p class="panel-sub">Face data is stored as a numerical descriptor in your Supabase project. Register only with your consent.</p>`:`<div class="notice" style="margin-top:20px">Teacher access is limited to your own schedules, enrolled student rosters, and associated attendance records.</div>`}</aside></div>`;
@@ -936,7 +915,7 @@ async function handleClick(event) {
         if (data.enrollments.some(e=>e.studentId===currentUserId&&e.scheduleId===scheduleId)) { toast('You are already enrolled in this class.'); break; }
         const { error } = await requireCloud().from('enrollments').insert({ student_id:currentUserId, schedule_id:scheduleId });
         if (error) throw error;
-        await refreshWorkspaceData({ silent:true }); renderApp(); toast('You joined the class.'); break;
+        await refreshWorkspaceData({ silent:true }); renderApp(); toast('You joined the class. Your QR pass was generated automatically.'); break;
       }
       case 'view-class': modal={type:'class-info',scheduleId:control.dataset.id}; renderApp(); break;
       case 'checkin': checkinAction(control.dataset.id,control.dataset.method); break;
@@ -947,7 +926,11 @@ async function handleClick(event) {
         else window.prompt('Copy this token:', token);
         toast('QR pass token copied.'); break;
       }
-      case 'generate-qr': await handleGenerateQr(control.dataset.id); break;
+      case 'refresh-qr-passes':
+        await refreshWorkspaceData({ silent:true });
+        renderApp();
+        toast(Object.keys(data.qrTokens).length ? 'Your automatically generated QR passes are up to date.' : 'No QR token loaded yet. Confirm that the enrollment is active and the latest QR migration has been applied.');
+        break;
       case 'download-qr': {
         const canvas = control.closest('.panel')?.querySelector('canvas[data-qr-token]');
         if (!canvas || canvas.dataset.drawn !== '1') { toast('Generate the QR pass first.'); break; }

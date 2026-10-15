@@ -65,6 +65,16 @@ let faceStream = null;
 let faceRegStream = null;
 let faceDetectionLoop = false;
 let faceModelsReady = false;
+let fingerprintPort = null;
+let fingerprintReader = null;
+let fingerprintWriter = null;
+let fingerprintReadPump = null;
+let fingerprintIncomingBytes = [];
+let fingerprintPacketQueue = [];
+let fingerprintPacketWaiters = [];
+let fingerprintScanActive = false;
+let fingerprintCapacity = 127;
+const FINGERPRINT_DEVICE_ID = 'attendx-main-reader-01';
 let liveAttendanceEntries = [];
 let cameraBusy = false;
 let faceRegistered = false;
@@ -436,8 +446,9 @@ async function startFaceCamera() {
     toast(`Could not start face camera: ${error.message || error}. Check the connection and model files, or use QR.`, 5000);
   }
 }
-async function stopCameraTools() {
+async function stopCameraTools({ closeFingerprint = true } = {}) {
   faceDetectionLoop = false;
+  fingerprintScanActive = false;
   if (qrScanner) {
     try { if (qrScanner.isScanning) await qrScanner.stop(); } catch (error) { console.debug(error); }
     try { qrScanner.clear(); } catch { /* already cleared */ }
@@ -453,23 +464,316 @@ async function stopCameraTools() {
   const reader = $('#camera-reader'); if (reader) { reader.innerHTML = ''; reader.hidden = false; }
   const region = $('#camera-region'); if (region) region.hidden = true;
   cameraBusy = false;
+  if (closeFingerprint) await disconnectFingerprintReader();
+}
+
+function rejectFingerprintPacketWaiters(error) {
+  for (const waiter of fingerprintPacketWaiters.splice(0)) {
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
+}
+function parseFingerprintPacketBuffer() {
+  while (fingerprintIncomingBytes.length >= 9) {
+    let header = -1;
+    for (let i = 0; i < fingerprintIncomingBytes.length - 1; i++) {
+      if (fingerprintIncomingBytes[i] === 0xEF && fingerprintIncomingBytes[i + 1] === 0x01) { header = i; break; }
+    }
+    if (header < 0) {
+      fingerprintIncomingBytes = fingerprintIncomingBytes.slice(-1);
+      return;
+    }
+    if (header > 0) fingerprintIncomingBytes.splice(0, header);
+    if (fingerprintIncomingBytes.length < 9) return;
+    const packetLength = (fingerprintIncomingBytes[7] << 8) | fingerprintIncomingBytes[8];
+    if (packetLength < 2 || packetLength > 1024) {
+      fingerprintIncomingBytes.shift();
+      continue;
+    }
+    const totalLength = 9 + packetLength;
+    if (fingerprintIncomingBytes.length < totalLength) return;
+    const packet = fingerprintIncomingBytes.splice(0, totalLength);
+    const waiter = fingerprintPacketWaiters.shift();
+    if (waiter) { clearTimeout(waiter.timer); waiter.resolve(packet); }
+    else fingerprintPacketQueue.push(packet);
+  }
+}
+function waitForFingerprintPacket(timeoutMs = 6000) {
+  if (fingerprintPacketQueue.length) return Promise.resolve(fingerprintPacketQueue.shift());
+  return new Promise((resolve, reject) => {
+    const waiter = {
+      resolve, reject,
+      timer: window.setTimeout(() => {
+        const index = fingerprintPacketWaiters.indexOf(waiter);
+        if (index >= 0) fingerprintPacketWaiters.splice(index, 1);
+        reject(new Error('Fingerprint reader did not respond. Check USB connection, baud rate (57600), and power.'));
+      }, timeoutMs)
+    };
+    fingerprintPacketWaiters.push(waiter);
+  });
+}
+async function connectFingerprintReader() {
+  if (!('serial' in navigator)) {
+    throw new Error('Fingerprint reader needs Chrome/Edge on a compatible computer browser and an AS608/R307 reader connected through USB-to-serial. Most phone browsers cannot connect to this UART reader directly.');
+  }
+  if (fingerprintPort?.readable && fingerprintPort?.writable && fingerprintReader && fingerprintWriter) return;
+  const port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 57600, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+  if (!port.readable || !port.writable) {
+    try { await port.close(); } catch {}
+    throw new Error('The selected serial port is unavailable. Reconnect the fingerprint reader and try again.');
+  }
+  fingerprintPort = port;
+  fingerprintIncomingBytes = [];
+  fingerprintPacketQueue = [];
+  fingerprintPacketWaiters = [];
+  const reader = port.readable.getReader();
+  fingerprintReader = reader;
+  fingerprintWriter = port.writable.getWriter();
+  fingerprintReadPump = (async () => {
+    while (fingerprintReader === reader) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        fingerprintIncomingBytes.push(...value);
+        parseFingerprintPacketBuffer();
+      }
+    }
+  })().catch(error => {
+    rejectFingerprintPacketWaiters(error);
+    if (fingerprintReader === reader) toast('Fingerprint serial connection lost. Reconnect the reader and try again.', 5000);
+  });
+  try {
+    const system = await sendFingerprintCommand([0x0F]);
+    if (system[0] === 0 && system.length >= 7) {
+      const capacity = (system[5] << 8) | system[6];
+      if (capacity >= 2) fingerprintCapacity = Math.min(capacity, 256);
+    }
+  } catch (error) {
+    console.warn('Fingerprint reader did not report its capacity; using a conservative slot limit.', error);
+  }
+  toast(`Fingerprint reader connected at 57600 baud · ${fingerprintCapacity - 1} usable slots.`);
+}
+async function disconnectFingerprintReader() {
+  fingerprintScanActive = false;
+  const reader = fingerprintReader;
+  const writer = fingerprintWriter;
+  const port = fingerprintPort;
+  fingerprintReader = null;
+  fingerprintWriter = null;
+  fingerprintPort = null;
+  rejectFingerprintPacketWaiters(new Error('Fingerprint reader disconnected.'));
+  if (reader) {
+    try { await reader.cancel(); } catch {}
+    try { await fingerprintReadPump; } catch {}
+    try { reader.releaseLock(); } catch {}
+  }
+  if (writer) { try { writer.releaseLock(); } catch {} }
+  fingerprintReadPump = null;
+  fingerprintIncomingBytes = [];
+  fingerprintPacketQueue = [];
+  if (port) { try { await port.close(); } catch (error) { console.debug('Serial port close:', error); } }
+}
+async function sendFingerprintCommand(commandBytes) {
+  if (!fingerprintWriter || !fingerprintReader) throw new Error('Connect the fingerprint reader first.');
+  const payloadLength = commandBytes.length + 2;
+  let checksum = 0x01 + (payloadLength >> 8) + (payloadLength & 0xFF);
+  for (const byte of commandBytes) checksum += byte;
+  const packet = new Uint8Array([
+    0xEF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+    (payloadLength >> 8) & 0xFF, payloadLength & 0xFF,
+    ...commandBytes, (checksum >> 8) & 0xFF, checksum & 0xFF
+  ]);
+  await fingerprintWriter.write(packet);
+  const response = await waitForFingerprintPacket();
+  if (response[6] !== 0x07) throw new Error('Invalid response from fingerprint reader. Check the serial connection and baud rate.');
+  return response.slice(9, response.length - 2);
+}
+function fingerprintStatusText(code) {
+  return ({
+    0x01:'Fingerprint packet error.', 0x02:'No finger detected yet.', 0x03:'Fingerprint image is too noisy. Clean the sensor and try again.',
+    0x06:'Fingerprint image is too messy. Press the finger gently and retry.', 0x07:'Fingerprint image is too small. Reposition the finger.',
+    0x08:'No fingerprint features were found. Try a cleaner, flatter finger placement.', 0x09:'No matching fingerprint template was found.',
+    0x0A:'The two fingerprint samples did not match. Re-enroll the same finger.', 0x0B:'Fingerprint storage address is out of range.',
+    0x0C:'Could not read the fingerprint template.', 0x0D:'Fingerprint sensor operation failed.',
+    0x0E:'Could not combine the fingerprint samples.', 0x10:'Fingerprint templates could not be merged.', 0x13:'Fingerprint sensor password verification failed.'
+  })[code] || `Fingerprint sensor returned error 0x${Number(code).toString(16).padStart(2,'0')}.`;
+}
+function expectFingerprintSuccess(payload, operation) {
+  if (!payload?.length) throw new Error(`No response while ${operation}.`);
+  if (payload[0] !== 0) throw new Error(fingerprintStatusText(payload[0]));
+  return payload;
+}
+const waitMs = ms => new Promise(resolve => window.setTimeout(resolve, ms));
+async function waitForFingerprintImage(prompt) {
+  toast(prompt, 5000);
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const payload = await sendFingerprintCommand([0x01]);
+    if (payload[0] === 0) return;
+    if (payload[0] !== 0x02) throw new Error(fingerprintStatusText(payload[0]));
+    await waitMs(250);
+  }
+  throw new Error('Timed out waiting for a finger. Press Cancel/Stop and try again.');
+}
+async function waitForFingerRemoval(showPrompt = true) {
+  if (showPrompt) toast('Lift your finger completely from the sensor.', 5000);
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const payload = await sendFingerprintCommand([0x01]);
+    if (payload[0] === 0x02) return;
+    if (payload[0] !== 0) throw new Error(fingerprintStatusText(payload[0]));
+    await waitMs(250);
+  }
+  throw new Error('The sensor still detects a finger. Lift your finger and try again.');
+}
+async function registerStudentFingerprint(studentId) {
+  const teacher = currentUser();
+  const scheduleId = $('#teacher-schedule-select')?.value || selectedTeacherSchedule;
+  const schedule = scheduleById(scheduleId);
+  if (teacher?.role !== 'teacher' || !schedule || !enrolledStudents(schedule.id).some(student => student.id === studentId)) {
+    return toast('Select a class and an enrolled student before registering a fingerprint.');
+  }
+  try {
+    // Open the serial picker immediately in the real click action to preserve browser permission.
+    await connectFingerprintReader();
+    await stopCameraTools({ closeFingerprint: false });
+    const { data: mappings, error: mappingsError } = await requireCloud().from('fingerprint_templates')
+      .select('sensor_slot,student_id').eq('device_id', FINGERPRINT_DEVICE_ID);
+    if (mappingsError) throw mappingsError;
+    const existing = (mappings || []).find(row => row.student_id === studentId);
+    const used = new Set((mappings || []).map(row => Number(row.sensor_slot)));
+    const maxSlot = Math.max(1, fingerprintCapacity - 1);
+    let slot = existing ? Number(existing.sensor_slot) : 0;
+    if (!slot) for (let candidate = 1; candidate <= maxSlot; candidate++) if (!used.has(candidate)) { slot = candidate; break; }
+    if (!slot || slot > maxSlot) throw new Error('Fingerprint storage is full. Remove an old reader template or use another reader.');
+    await waitForFingerprintImage('Place the student’s finger on the sensor.');
+    expectFingerprintSuccess(await sendFingerprintCommand([0x02, 0x01]), 'converting the first fingerprint sample');
+    await waitForFingerRemoval(true);
+    await waitForFingerprintImage('Place the same finger on the sensor a second time.');
+    expectFingerprintSuccess(await sendFingerprintCommand([0x02, 0x02]), 'converting the second fingerprint sample');
+    expectFingerprintSuccess(await sendFingerprintCommand([0x05]), 'combining fingerprint samples');
+    expectFingerprintSuccess(await sendFingerprintCommand([0x06, 0x01, (slot >> 8) & 0xFF, slot & 0xFF]), 'saving the fingerprint to the sensor');
+    const { data: saved, error } = await requireCloud().functions.invoke('register-fingerprint', {
+      body: { scheduleId, studentId, deviceId: FINGERPRINT_DEVICE_ID, sensorSlot: slot }
+    });
+    if (error || saved?.error || !saved?.ok) throw await readFunctionError(error, saved);
+    toast(`Fingerprint enrolled for ${fullName(userById(studentId))} · sensor slot ${slot}.`, 5000);
+    await refreshWorkspaceData({ silent: true });
+  } catch (error) {
+    console.error('Fingerprint enrollment failed:', error);
+    toast(`Fingerprint enrollment failed: ${error.message || error}`, 6000);
+  }
+}
+async function startFingerprintAttendanceScan() {
+  const teacher = currentUser();
+  const scheduleId = $('#teacher-schedule-select')?.value || selectedTeacherSchedule;
+  if (teacher?.role !== 'teacher') return toast('Only teachers can scan fingerprints for attendance.');
+  if (!scheduleById(scheduleId)) return toast('Choose a class schedule first.');
+  try {
+    await connectFingerprintReader();
+    await stopCameraTools({ closeFingerprint: false });
+    fingerprintScanActive = true;
+    const scannedSlots = new Set();
+    toast('Fingerprint attendance scan started. Place one enrolled student’s finger on the reader; use Stop Camera to finish.', 5000);
+    while (fingerprintScanActive && fingerprintReader && fingerprintWriter) {
+      const image = await sendFingerprintCommand([0x01]);
+      if (image[0] === 0x02) { await waitMs(250); continue; }
+      if (image[0] !== 0) {
+        toast(fingerprintStatusText(image[0]), 4500);
+        await waitForFingerRemoval(false);
+        continue;
+      }
+      expectFingerprintSuccess(await sendFingerprintCommand([0x02, 0x01]), 'processing the fingerprint');
+      const search = await sendFingerprintCommand([0x04, 0x01, 0x00, 0x00, (fingerprintCapacity >> 8) & 0xFF, fingerprintCapacity & 0xFF]);
+      if (search[0] === 0 && search.length >= 5) {
+        const slot = (search[1] << 8) | search[2];
+        if (!scannedSlots.has(slot)) {
+          try {
+            const { data: verified, error } = await requireCloud().functions.invoke('verify-fingerprint', {
+              body: { scheduleId, deviceId: FINGERPRINT_DEVICE_ID, sensorSlot: slot }
+            });
+            if (error || verified?.error || !verified?.student?.id) throw await readFunctionError(error, verified);
+            const record = await saveAttendanceViaRpc(verified.student.id, scheduleId, 'FINGERPRINT');
+            scannedSlots.add(slot);
+            toast(`${verified.student.name}: ${record.status} · Fingerprint verified`, 5000);
+            await refreshWorkspaceData({ silent: true });
+          } catch (error) {
+            const message = String(error.message || error);
+            if (message.toLowerCase().includes('already recorded')) {
+              scannedSlots.add(slot);
+              toast('ALREADY VERIFIED — attendance already exists for today.', 4500);
+            } else toast(message, 5000);
+          }
+        } else {
+          toast('This fingerprint has already been scanned in this session. Lift the finger before scanning again.', 3500);
+        }
+      } else if (search[0] === 0x09) {
+        toast('No matching registered fingerprint. Register the student’s finger first or use QR/face verification.', 5000);
+      } else {
+        throw new Error(fingerprintStatusText(search[0]));
+      }
+      await waitForFingerRemoval(false);
+    }
+  } catch (error) {
+    if (fingerprintScanActive) toast(`Fingerprint scan stopped: ${error.message || error}`, 6000);
+    console.error('Fingerprint scan failed:', error);
+    fingerprintScanActive = false;
+  }
 }
 async function startFaceRegistrationCamera() {
   const user = currentUser();
   if (!user || user.role !== 'student') return toast('Only a student can register their face.');
   try {
-    await loadFaceModels();
     const video = $('#face-registration-video'); if (!video) throw new Error('Face registration preview not found.');
-    faceRegStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 540 } }, audio: false });
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS and a browser that supports camera capture.');
+    video.hidden = false;
+    video.muted = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.style.display = 'block';
+    const status = $('#face-camera-status');
+    if (status) { status.hidden = false; status.textContent = 'Requesting camera permission…'; }
+    faceRegStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 } }
+    });
     video.srcObject = faceRegStream;
+    await new Promise((resolve, reject) => {
+      if (video.readyState >= 1 && video.videoWidth > 0) { resolve(); return; }
+      const timer = window.setTimeout(() => { cleanup(); reject(new Error('Camera connected but no video preview arrived. Close other camera apps, reload the page, and allow camera access for this site.')); }, 8000);
+      const loaded = () => { cleanup(); resolve(); };
+      const cleanup = () => { clearTimeout(timer); video.removeEventListener('loadedmetadata', loaded); };
+      video.addEventListener('loadedmetadata', loaded, { once: true });
+    });
     await video.play();
-    toast('Camera ready. Face the camera in good lighting and press Capture Face.');
-  } catch (error) { console.error(error); toast(`Face registration camera failed: ${error.message || error}`); }
+    await new Promise((resolve, reject) => {
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) { resolve(); return; }
+      const timer = window.setTimeout(() => { cleanup(); reject(new Error('Camera permission was granted, but the browser did not deliver a live frame. Try closing another app using the camera and reopen Face Registration.')); }, 8000);
+      const loaded = () => { cleanup(); resolve(); };
+      const cleanup = () => { clearTimeout(timer); video.removeEventListener('loadeddata', loaded); };
+      video.addEventListener('loadeddata', loaded, { once: true });
+    });
+    if (!faceRegStream.getVideoTracks().some(track => track.readyState === 'live')) throw new Error('The camera stream ended. Reopen Face Registration and allow camera access.');
+    const statusNow = $('#face-camera-status');
+    if (statusNow) statusNow.hidden = true;
+    toast('Live camera preview ready. Face the camera in good lighting and press Capture Face.');
+    await loadFaceModels();
+  } catch (error) {
+    console.error(error);
+    const status = $('#face-camera-status');
+    if (status) { status.hidden = false; status.textContent = error.message || 'Could not show the live camera preview.'; }
+    toast(`Face registration camera failed: ${error.message || error}`, 6000);
+  }
 }
 async function captureAndSaveFace() {
   const video = $('#face-registration-video');
   if (!video || !faceRegStream) return toast('Start the camera first.');
+  if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return toast('The live camera picture is not ready yet. Wait for the preview, then capture again.');
   try {
+    await loadFaceModels();
     const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.6 })).withFaceLandmarks(true).withFaceDescriptors();
     if (detections.length === 0) return toast('No clear face found. Face the camera, improve lighting, and retry.');
     if (detections.length > 1) return toast('More than one face detected. Only the student registering should be visible.');
@@ -643,15 +947,15 @@ function renderTeacherCenter(user) {
   const date = todayISO();
   const rosterRows = roster.map(student => {
     const record = getRecord(student.id, schedule.id, date);
-    return `<tr data-roster-student="${esc(student.id)}"><td><span class="row-primary">${esc(fullName(student))}</span><br><span class="muted">${esc(student.accountId)}</span></td><td>${esc(`${student.course} · ${student.year} / ${student.section}`)}</td><td>${record ? badge(record.status) : `<span class="status">NOT RECORDED</span>`}</td><td>${record ? `${esc(record.time)} · ${esc(record.method)}` : '—'}</td></tr>`;
+    return `<tr data-roster-student="${esc(student.id)}"><td><span class="row-primary">${esc(fullName(student))}</span><br><span class="muted">${esc(student.accountId)}</span></td><td>${esc(`${student.course} · ${student.year} / ${student.section}`)}</td><td>${record ? badge(record.status) : `<span class="status">NOT RECORDED</span>`}</td><td>${record ? `${esc(record.time)} · ${esc(record.method)}` : '—'}</td><td><button class="btn ghost small" data-action="enroll-fingerprint" data-id="${esc(student.id)}">Enroll Fingerprint</button></td></tr>`;
   }).join('');
   return `${pageHead('Attendance Center', 'Select a class, then start the QR or face camera to record attendance.', '')}<div class="attendance-tools"><section class="panel"><div class="panel-head"><div><h2>Attendance setup</h2><div class="panel-sub">Uses the live Asia/Manila clock and the 15-minute attendance rule.</div></div></div><div class="field"><label>Class schedule</label><select id="teacher-schedule-select">${schedules.map(s=>`<option value="${esc(s.id)}" ${s.id===selectedTeacherSchedule?'selected':''}>${esc(s.subject)} · ${esc(s.course)} ${esc(s.year)}-${esc(s.section)} · ${esc(s.day)}</option>`).join('')}</select></div>
     <div class="notice" style="margin-top:14px">Choose the correct class. Attendance is checked against the selected teacher, class enrollment, current server time, and any existing record for today.</div>
-    <div class="class-actions"><button class="btn" data-action="start-qr-camera" ${schedule?'':'disabled'}>Start QR Camera</button><button class="btn secondary" data-action="start-face-camera" ${schedule?'':'disabled'}>Start Face Camera</button><button class="btn ghost" data-action="stop-camera">Stop Camera</button></div>
+    <div class="class-actions"><button class="btn" data-action="start-qr-camera" ${schedule?'':'disabled'}>Start QR Camera</button><button class="btn secondary" data-action="start-face-camera" ${schedule?'':'disabled'}>Start Face Camera</button><button class="btn secondary" data-action="start-fingerprint-scan" ${schedule?'':'disabled'}>Start Fingerprint Scan</button><button class="btn ghost" data-action="stop-camera">Stop Camera / Reader</button></div>
     <div class="class-actions"><button class="btn secondary" data-action="refresh-roster">Refresh roster</button><button class="btn danger" data-action="mark-no-shows" ${schedule?'':'disabled'}>Mark no-shows ABSENT</button></div>
   </section><section class="panel"><div class="panel-head"><div><h2>Selected class</h2><div class="panel-sub">Live roster and verification controls.</div></div></div>${schedule ? `<div class="class-card"><div class="class-title">${esc(schedule.subject)}</div><div class="class-meta">${esc(schedule.course)} · ${esc(schedule.year)} Year · Section ${esc(schedule.section)}<br>${esc(schedule.day)} · ${time12(schedule.startTime)}–${time12(schedule.endTime)}</div></div><div class="stats-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:13px;margin-bottom:0">${statCard('Enrolled',roster.length,'Students in this class','♙')}${statCard('Recorded',roster.filter(st=>getRecord(st.id,schedule.id,date)).length,'Records today','◷')}</div>` : `<div class="empty"><strong>No schedule yet</strong>Create a schedule before starting attendance.</div>`}<div class="notice warning" style="margin-top:14px">Phone/laptop cameras require HTTPS or localhost. Face matching requires each student to register a face template first. Use QR when face matching is unclear.</div></section></div>
   <section class="camera-layout" id="camera-region" hidden><div class="panel camera-panel"><div class="panel-head"><div><h2>Live scanner</h2><div class="panel-sub">The camera stays open until you press Stop Camera or leave this page.</div></div><span class="status present">LIVE</span></div><div id="camera-reader" hidden></div><video id="face-video" class="camera-video" autoplay playsinline muted hidden></video><div class="camera-help">QR mode: point the rear camera at the student's QR Pass. Face mode: place one face in view, with good lighting.</div></div><div class="panel live-list-panel"><div class="panel-head"><div><h2>Verified students</h2><div class="panel-sub">Newly attended students appear here without closing the scanner.</div></div><span class="pill" id="live-count">${liveAttendanceEntries.length} scanned</span></div><div id="live-attended-list">${liveAttendanceEntries.map(item=>`<div class="live-attendee"><span class="live-check">✓</span><div><b>${esc(item.name)}</b><small>${esc(item.accountId)} · ${esc(item.time)} · ${esc(item.method)}</small></div>${badge(item.status)}</div>`).join('') || `<div class="empty"><strong>Waiting for scans</strong>Verified students will appear here.</div>`}</div></div></section>
-  <section class="panel"><div class="panel-head"><div><h2>Class roster</h2><div class="panel-sub">${esc(date)} · No-shows can only be marked after the class end time.</div></div></div>${roster.length ? `<div class="table-wrap"><table><thead><tr><th>Student</th><th>Class placement</th><th>Status</th><th>Record</th></tr></thead><tbody>${rosterRows}</tbody></table></div>` : `<div class="empty">No students enrolled in this class yet.</div>`}</section>`;
+  <section class="panel"><div class="panel-head"><div><h2>Class roster</h2><div class="panel-sub">${esc(date)} · No-shows can only be marked after the class end time.</div></div></div>${roster.length ? `<div class="table-wrap"><table><thead><tr><th>Student</th><th>Class placement</th><th>Status</th><th>Record</th><th>Biometric setup</th></tr></thead><tbody>${rosterRows}</tbody></table></div>` : `<div class="empty">No students enrolled in this class yet.</div>`}</section>`;
 }
 function renderRecords(user) {
   const records = attendanceForTeacher(user.id).filter(r => `${r.date} ${r.time} ${r.method} ${r.status} ${scheduleById(r.scheduleId)?.subject || ''} ${fullName(userById(r.studentId))}`.toLowerCase().includes(recordSearch.toLowerCase()));
@@ -700,7 +1004,7 @@ function renderApp() {
 function renderModal() {
   if (!modal) return '';
   if (modal.type === 'face-register') {
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal face-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-content><div class="eyebrow">Student biometric registration</div><h2 id="modal-title">${faceRegistered?'Update face recognition':'Register face recognition'}</h2><p>Allow camera access, look straight at the camera, use good lighting, and keep only one face in view. AttendX stores a 128-number face descriptor for matching; it does not store a photo.</p><video id="face-registration-video" class="camera-video face-register-video" autoplay playsinline muted></video><div class="notice warning" style="margin-top:12px">Face matching can make mistakes, including with similar-looking people or twins. The app rejects close/ambiguous matches and the teacher can use QR verification instead.</div><div class="modal-actions"><button class="btn" type="button" data-action="capture-face">Capture Face</button><button class="btn secondary" type="button" data-action="close-modal">Cancel</button></div></section></div>`;
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal face-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-content><div class="eyebrow">Student biometric registration</div><h2 id="modal-title">${faceRegistered?'Update face recognition':'Register face recognition'}</h2><p>Allow camera access, look straight at the camera, use good lighting, and keep only one face in view. AttendX stores a 128-number face descriptor for matching; it does not store a photo.</p><div class="face-preview-frame"><video id="face-registration-video" class="camera-video face-register-video" autoplay playsinline muted></video><div id="face-camera-status" class="face-camera-status">Connecting to camera…</div></div><div class="camera-help">Use the front camera on your phone. Keep your whole face inside the preview and wait until the live picture appears.</div><div class="notice warning" style="margin-top:12px">Face matching can make mistakes, including with similar-looking people or twins. The app rejects close/ambiguous matches and the teacher can use QR verification instead.</div><div class="modal-actions"><button class="btn" type="button" data-action="capture-face">Capture Face</button><button class="btn secondary" type="button" data-action="close-modal">Cancel</button></div></section></div>`;
   }
   if (modal.type === 'checkin') {
     const schedule = scheduleById(modal.scheduleId);
@@ -709,7 +1013,7 @@ function renderModal() {
       return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Face recognition attendance</div><h2>${esc(schedule?.subject || 'Class check-in')}</h2><p><b>You do not need to generate a QR pass for face attendance.</b> First register your face in My Profile. Then ask your teacher to select this class in Attendance Center and start Face Camera. AttendX will verify your registered face against students enrolled in this class and record attendance if it matches.</p><div class="notice" style="margin-top:12px">Face attendance is teacher-scanned. Opening this page does not record attendance by itself.</div><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="profile">Register / Check My Face</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
     }
     if (method === 'FINGERPRINT') {
-      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Fingerprint attendance</div><h2>Fingerprint reader not connected</h2><p>Fingerprint attendance is not functional in this browser build yet. The AS608/R307 reader needs a tested serial/native integration and registered fingerprint IDs. This button must not mark a student present until the reader actually verifies a fingerprint.</p><p>You can use <b>Face Recognition without generating a QR pass</b> after registering your face in My Profile, or use a QR pass.</p><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="profile">Open My Profile</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
+      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Fingerprint attendance</div><h2>Register your fingerprint with your teacher</h2><p>For this web build, a compatible AS608/R307 sensor must be connected to the teacher’s computer through USB-to-serial. The teacher opens Attendance Center, selects this class, then clicks <b>Enroll Fingerprint</b> beside your name and captures the same finger twice.</p><p>After enrollment, the teacher can start <b>Fingerprint Scan</b> to verify a real sensor match and record attendance. A phone browser generally cannot connect directly to the UART reader without a separate supported hardware bridge.</p><div class="modal-actions"><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
     }
     return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">QR attendance verification</div><h2>${esc(schedule?.subject || 'Class check-in')}</h2><p>QR attendance requires a generated student pass for this class. If you prefer face attendance, use the Face Recognition button instead; QR generation is not required for face verification.</p><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="qr">Open QR Pass</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
   }
@@ -959,7 +1263,9 @@ async function handleClick(event) {
         selectedTeacherSchedule=$('#teacher-schedule-select')?.value||selectedTeacherSchedule; await stopCameraTools(); await markNoShows(); break;
       case 'start-qr-camera': await startQrCamera(); break;
       case 'start-face-camera': await startFaceCamera(); break;
-      case 'stop-camera': await stopCameraTools(); if ($('#camera-region')) $('#camera-region').hidden=true; toast('Camera stopped.'); break;
+      case 'start-fingerprint-scan': await startFingerprintAttendanceScan(); break;
+      case 'enroll-fingerprint': await registerStudentFingerprint(control.dataset.id); break;
+      case 'stop-camera': await stopCameraTools(); if ($('#camera-region')) $('#camera-region').hidden=true; toast('Camera and fingerprint reader stopped.'); break;
       case 'register-face':
         if (currentUser()?.role !== 'student') { toast('Only students can register their face.'); break; }
         await stopCameraTools(); modal={type:'face-register'}; renderApp(); break;

@@ -108,6 +108,8 @@ test('AS608/R307 fingerprint workflow uses live serial commands and server verif
   assert.match(app, /functions\.invoke\('verify-fingerprint'/);
   assert.match(app, /saveAttendanceViaRpc\(verified\.student\.id, scheduleId, 'FINGERPRINT'\)/);
   assert.match(app, /data-action="enroll-fingerprint"/);
+  assert.match(app, /localStorage\.getItem\('attendx-fingerprint-reader-id'\)/);
+  assert.match(app, /getFingerprintDeviceId\(\)/);
   assert.match(fingerprintRegisterFunction, /role !== 'teacher'/);
   assert.match(fingerprintRegisterFunction, /sensor_slot/);
   assert.match(fingerprintVerifyFunction, /eq\('teacher_id', user\.id\)/);

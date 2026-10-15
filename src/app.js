@@ -562,7 +562,7 @@ async function connectFingerprintReader() {
   try {
     const system = await sendFingerprintCommand([0x0F]);
     if (system[0] === 0 && system.length >= 7) {
-      const capacity = (system[5] << 8) | system[6];
+      const capacity = (system[3] << 8) | system[4];
       if (capacity >= 2) fingerprintCapacity = Math.min(capacity, 256);
     }
   } catch (error) {

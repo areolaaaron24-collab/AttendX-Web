@@ -11,6 +11,7 @@ const qrFunction = readFileSync(resolve(root, 'supabase/functions/verify-qr/inde
 const faceRegisterFunction = readFileSync(resolve(root, 'supabase/functions/register-face/index.ts'), 'utf8');
 const faceFunction = readFileSync(resolve(root, 'supabase/functions/verify-face/index.ts'), 'utf8');
 const envExample = readFileSync(resolve(root, '.env.example'), 'utf8');
+const app = readFileSync(resolve(root, 'src/app.js'), 'utf8');
 
 test('SQL attendance status boundaries match the selected AttendX rule', () => {
   assert.match(sql, /if v_elapsed <= interval '0 seconds' then v_status := 'PRESENT';\s*elsif v_elapsed < interval '15 minutes' then v_status := 'LATE';\s*else v_status := 'LATE-ABSENT';/i);
@@ -50,4 +51,28 @@ test('public account registration cannot create teacher accounts without a priva
   assert.match(accountRegisterFunction, /Deno\.env\.get\('ATTENDX_TEACHER_INVITE_CODE'\)/);
   assert.match(accountRegisterFunction, /teacherInviteCode !== configuredInviteCode/);
   assert.match(accountRegisterFunction, /Teacher registration is disabled until the administrator configures/);
+});
+
+
+test('QR generation checks enrollment and rejects an empty token response', () => {
+  assert.match(app, /Join this class from Browse Classes before generating its QR pass/);
+  assert.match(app, /typeof token !== 'string' \|\| !token\.trim\(\)/);
+  assert.match(app, /get_or_create_student_qr_token/);
+});
+
+test('face attendance is independent of QR token generation', () => {
+  assert.match(app, /You do not need to generate a QR pass for face attendance/);
+  assert.match(app, /functions\.invoke\('verify-face'/);
+  assert.match(app, /saveAttendanceViaRpc\(candidateStudentId, scheduleId, 'FACE'\)/);
+});
+
+test('fingerprint attendance is not reported successful without hardware integration', () => {
+  assert.match(app, /Fingerprint reader not connected/);
+  assert.match(app, /must not mark a student present until the reader actually verifies a fingerprint/);
+});
+
+test('Add Schedule accepts a manually typed subject and adds missing names to the catalog', () => {
+  assert.match(app, /<input name="subject" required maxlength="80" placeholder="Type the subject name/);
+  assert.match(app, /from\('subjects'\)\.insert\(\{ name:subject, created_by:currentUserId \}\)/);
+  assert.match(app, /from\('schedules'\)\.insert\(schedule\)/);
 });

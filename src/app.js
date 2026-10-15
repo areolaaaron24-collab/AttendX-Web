@@ -474,13 +474,25 @@ async function captureAndSaveFace() {
   } catch (error) { console.error(error); toast(`Could not save face data: ${error.message || error}`); }
 }
 async function handleGenerateQr(scheduleId) {
+  const user = currentUser();
+  if (!user || user.role !== 'student') return toast('Log in to a Student account to generate a QR pass.');
+  if (!data.enrollments.some(item => item.studentId === user.id && item.scheduleId === scheduleId)) {
+    return toast('Join this class from Browse Classes before generating its QR pass.');
+  }
   try {
     const { data: token, error } = await requireCloud().rpc('get_or_create_student_qr_token', { p_schedule_id: scheduleId });
     if (error) throw error;
-    data.qrTokens[`${currentUserId}:${scheduleId}`] = token;
+    if (typeof token !== 'string' || !token.trim()) {
+      throw new Error('The QR service returned no token. Check that the AttendX database migration is applied, then try again.');
+    }
+    data.qrTokens[`${user.id}:${scheduleId}`] = token.trim();
     renderApp();
+    window.setTimeout(drawQrCodes, 50);
     toast('Scannable QR pass created. Ask your teacher to scan it with the QR camera.');
-  } catch (error) { toast(error.message || String(error)); }
+  } catch (error) {
+    console.error('AttendX QR generation failed:', error);
+    toast(`Could not generate QR pass: ${error.message || String(error)}`, 5500);
+  }
 }
 function drawQrCodes() {
   document.querySelectorAll('canvas[data-qr-token]').forEach(canvas => {
@@ -622,7 +634,7 @@ function renderSchedule(user) {
   return `${pageHead('My Schedule', 'All class schedules created by your teacher account.', `<button class="btn small" data-action="navigate" data-page="addSchedule">Add schedule +</button>`)}${schedules.length ? `<div class="class-list">${schedules.map(s=>classCard(s,{teacher:true})).join('')}</div>` : `<div class="empty"><strong>No schedules yet</strong>Create a schedule so students can find your class.</div>`}`;
 }
 function renderAddSchedule(user) {
-  return `${pageHead('Add Schedule', 'Create a class schedule for eligible students to discover and join.', '')}<section class="panel"><div class="panel-head"><div><h2>Class information</h2><div class="panel-sub">The schedule will be saved to the shared AttendX cloud database.</div></div></div><form data-form="add-schedule"><div class="form-grid"><div class="field"><label>Subject *</label><select name="subject" required>${data.subjects.map(s=>`<option>${esc(s)}</option>`).join('')}</select></div><div class="field"><label>Course *</label><input name="course" value="BSIT" required maxlength="30"></div><div class="field"><label>Year level *</label><select name="year"><option>1ST</option><option selected>2ND</option><option>3RD</option><option>4TH</option></select></div><div class="field"><label>Section *</label><input name="section" value="D" required maxlength="10"></div><div class="field"><label>Day *</label><select name="day">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map(d=>`<option ${d===currentDayName()?'selected':''}>${d}</option>`).join('')}</select></div><div class="field"><label>Start time *</label><input name="startTime" type="time" value="13:00" required></div><div class="field"><label>End time *</label><input name="endTime" type="time" value="14:30" required></div></div><div class="form-actions"><button class="btn" type="submit">Save schedule</button><button class="btn secondary" type="button" data-action="navigate" data-page="schedule">Cancel</button></div></form></section><section class="panel"><div class="panel-head"><div><h2>Need a new subject?</h2><div class="panel-sub">Add it in the Subject Catalog before creating a schedule.</div></div><button class="btn secondary small" data-action="navigate" data-page="catalog">Open catalog →</button></div></section>`;
+  return `${pageHead('Add Schedule', 'Create a class schedule for eligible students to discover and join.', '')}<section class="panel"><div class="panel-head"><div><h2>Class information</h2><div class="panel-sub">The schedule will be saved to the shared AttendX cloud database.</div></div></div><form data-form="add-schedule"><div class="form-grid"><div class="field"><label>Subject *</label><input name="subject" required maxlength="80" placeholder="Type the subject name (e.g. Web Development)"></div><div class="field"><label>Course *</label><input name="course" value="BSIT" required maxlength="30"></div><div class="field"><label>Year level *</label><select name="year"><option>1ST</option><option selected>2ND</option><option>3RD</option><option>4TH</option></select></div><div class="field"><label>Section *</label><input name="section" value="D" required maxlength="10"></div><div class="field"><label>Day *</label><select name="day">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map(d=>`<option ${d===currentDayName()?'selected':''}>${d}</option>`).join('')}</select></div><div class="field"><label>Start time *</label><input name="startTime" type="time" value="13:00" required></div><div class="field"><label>End time *</label><input name="endTime" type="time" value="14:30" required></div></div><div class="form-actions"><button class="btn" type="submit">Save schedule</button><button class="btn secondary" type="button" data-action="navigate" data-page="schedule">Cancel</button></div></form></section><section class="panel"><div class="panel-head"><div><h2>Need a new subject?</h2><div class="panel-sub">Add it in the Subject Catalog before creating a schedule.</div></div><button class="btn secondary small" data-action="navigate" data-page="catalog">Open catalog →</button></div></section>`;
 }
 function renderStudents(user) {
   const teacherScheduleIds = getTeacherSchedules(user.id).map(s=>s.id);
@@ -701,7 +713,14 @@ function renderModal() {
   }
   if (modal.type === 'checkin') {
     const schedule = scheduleById(modal.scheduleId);
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Attendance verification</div><h2>${esc(schedule?.subject || 'Class check-in')}</h2><p>AttendX uses teacher-controlled QR/face scanning and the server clock. Open the QR Pass page to show a pass to your teacher, or register face recognition in Profile.</p><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="qr">Open QR Pass</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
+    const method = modal.method || 'QR';
+    if (method === 'FACE') {
+      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Face recognition attendance</div><h2>${esc(schedule?.subject || 'Class check-in')}</h2><p><b>You do not need to generate a QR pass for face attendance.</b> First register your face in My Profile. Then ask your teacher to select this class in Attendance Center and start Face Camera. AttendX will verify your registered face against students enrolled in this class and record attendance if it matches.</p><div class="notice" style="margin-top:12px">Face attendance is teacher-scanned. Opening this page does not record attendance by itself.</div><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="profile">Register / Check My Face</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
+    }
+    if (method === 'FINGERPRINT') {
+      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Fingerprint attendance</div><h2>Fingerprint reader not connected</h2><p>Fingerprint attendance is not functional in this browser build yet. The AS608/R307 reader needs a tested serial/native integration and registered fingerprint IDs. This button must not mark a student present until the reader actually verifies a fingerprint.</p><p>You can use <b>Face Recognition without generating a QR pass</b> after registering your face in My Profile, or use a QR pass.</p><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="profile">Open My Profile</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
+    }
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">QR attendance verification</div><h2>${esc(schedule?.subject || 'Class check-in')}</h2><p>QR attendance requires a generated student pass for this class. If you prefer face attendance, use the Face Recognition button instead; QR generation is not required for face verification.</p><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="qr">Open QR Pass</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
   }
   if (modal.type === 'fingerprint-info') {
     const schedule = scheduleById(modal.scheduleId);
@@ -805,8 +824,17 @@ async function handleForm(form) {
         const subject=cleanText(fields.get('subject')), course=cleanText(fields.get('course')).toUpperCase(), year=cleanText(fields.get('year')).toUpperCase(), section=cleanText(fields.get('section')).toUpperCase(), day=cleanText(fields.get('day')), startTime=cleanText(fields.get('startTime')), endTime=cleanText(fields.get('endTime'));
         if (!subject || !course || !year || !section || !day || !startTime || !endTime) return toast('Complete all required schedule fields.');
         if (startTime >= endTime) return toast('End time must be later than start time.');
+        const client = requireCloud();
+        const { data: knownSubject, error: subjectLookupError } = await client.from('subjects')
+          .select('name').eq('name_key', subject.toLowerCase()).maybeSingle();
+        if (subjectLookupError) throw subjectLookupError;
+        if (!knownSubject) {
+          const { error: subjectInsertError } = await client.from('subjects').insert({ name:subject, created_by:currentUserId });
+          // Another teacher may have added the same normalized name at the same time.
+          if (subjectInsertError && subjectInsertError.code !== '23505') throw subjectInsertError;
+        }
         const schedule = { id:makeId('schedule'), teacher_id:currentUserId, subject, course, year_level:year, section, day, start_time:startTime, end_time:endTime, status:'ACTIVE' };
-        const { error } = await requireCloud().from('schedules').insert(schedule);
+        const { error } = await client.from('schedules').insert(schedule);
         if (error) throw error;
         await refreshWorkspaceData({ silent:true }); activePage='schedule'; renderApp(); return toast('Schedule saved. Eligible students can now find it.');
       }

@@ -11,8 +11,12 @@ const accountRegisterFunction = readFileSync(resolve(root, 'supabase/functions/a
 const qrFunction = readFileSync(resolve(root, 'supabase/functions/verify-qr/index.ts'), 'utf8');
 const faceRegisterFunction = readFileSync(resolve(root, 'supabase/functions/register-face/index.ts'), 'utf8');
 const faceFunction = readFileSync(resolve(root, 'supabase/functions/verify-face/index.ts'), 'utf8');
+const fingerprintRegisterFunction = readFileSync(resolve(root, 'supabase/functions/register-fingerprint/index.ts'), 'utf8');
+const fingerprintVerifyFunction = readFileSync(resolve(root, 'supabase/functions/verify-fingerprint/index.ts'), 'utf8');
+const fingerprintMigration = readFileSync(resolve(root, 'supabase/migrations/202610150004_fingerprint_reader.sql'), 'utf8');
 const envExample = readFileSync(resolve(root, '.env.example'), 'utf8');
 const app = readFileSync(resolve(root, 'src/app.js'), 'utf8');
+const css = readFileSync(resolve(root, 'src/styles.css'), 'utf8');
 
 test('SQL attendance status boundaries match the selected AttendX rule', () => {
   assert.match(sql, /if v_elapsed <= interval '0 seconds' then v_status := 'PRESENT';\s*elsif v_elapsed < interval '15 minutes' then v_status := 'LATE';\s*else v_status := 'LATE-ABSENT';/i);
@@ -76,6 +80,14 @@ test('face attendance is independent of QR token generation', () => {
   assert.match(app, /saveAttendanceViaRpc\(candidateStudentId, scheduleId, 'FACE'\)/);
 });
 
+test('face registration preview waits for a live phone-camera frame', () => {
+  assert.match(app, /video\.playsInline = true/);
+  assert.match(app, /video\.videoWidth > 0/);
+  assert.match(app, /id="face-camera-status"/);
+  assert.match(app, /class="face-preview-frame"/);
+  assert.match(css, /\.face-preview-frame/);
+});
+
 test('face scan rejects multiple visible faces and refuses ambiguous biometric matches', () => {
   assert.match(app, /detectAllFaces\(video/);
   assert.match(app, /detections\.length > 1/);
@@ -84,9 +96,23 @@ test('face scan rejects multiple visible faces and refuses ambiguous biometric m
   assert.match(faceFunction, /The face match is ambiguous/);
 });
 
-test('fingerprint attendance is not reported successful without hardware integration', () => {
-  assert.match(app, /Fingerprint reader not connected/);
-  assert.match(app, /must not mark a student present until the reader actually verifies a fingerprint/);
+test('AS608/R307 fingerprint workflow uses live serial commands and server verification', () => {
+  assert.match(app, /navigator\.serial\.requestPort\(\)/);
+  assert.match(app, /sendFingerprintCommand\(\[0x01\]\)/);
+  assert.match(app, /sendFingerprintCommand\(\[0x02, 0x01\]\)/);
+  assert.match(app, /sendFingerprintCommand\(\[0x02, 0x02\]\)/);
+  assert.match(app, /sendFingerprintCommand\(\[0x05\]\)/);
+  assert.match(app, /sendFingerprintCommand\(\[0x06, 0x01/);
+  assert.match(app, /functions\.invoke\('verify-fingerprint'/);
+  assert.match(app, /saveAttendanceViaRpc\(verified\.student\.id, scheduleId, 'FINGERPRINT'\)/);
+  assert.match(app, /data-action="enroll-fingerprint"/);
+  assert.match(fingerprintRegisterFunction, /role !== 'teacher'/);
+  assert.match(fingerprintRegisterFunction, /sensor_slot/);
+  assert.match(fingerprintVerifyFunction, /eq\('teacher_id', user\.id\)/);
+  assert.match(fingerprintVerifyFunction, /not enrolled in the selected class/);
+  assert.match(fingerprintMigration, /unique \(device_id, sensor_slot\)/i);
+  assert.match(fingerprintMigration, /unique \(device_id, student_id\)/i);
+  assert.match(fingerprintMigration, /enable row level security/i);
 });
 
 test('Add Schedule accepts a manually typed subject and adds missing names to the catalog', () => {

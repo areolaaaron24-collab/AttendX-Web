@@ -89,6 +89,12 @@ test('face registration preview waits for a decoded frame before enabling captur
   assert.match(app, /await stopCameraTools\(\);\s*modal=\{type:'face-register'\}/);
   assert.match(app, /id="face-camera-status"/);
   assert.match(app, /class="face-preview-frame"/);
+  assert.match(app, /width: \{ ideal: 480 \}/);
+  assert.match(app, /height: \{ ideal: 360 \}/);
+  assert.match(app, /frameRate: \{ ideal: 15, max: 24 \}/);
+  assert.match(app, /let faceModelsPromise = null/);
+  assert.match(app, /const modelsReadyPromise = loadFaceModels\(\)/);
+  assert.match(app, /More than one face detected\. Keep only the student registering in view/);
   assert.match(css, /\.face-preview-frame/);
 });
 

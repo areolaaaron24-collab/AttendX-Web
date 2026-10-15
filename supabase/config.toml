@@ -1,0 +1,13 @@
+project_id = "attendx"
+
+[functions.account-register]
+verify_jwt = false
+
+[functions.verify-qr]
+verify_jwt = true
+
+[functions.verify-face]
+verify_jwt = true
+
+[functions.register-face]
+verify_jwt = true

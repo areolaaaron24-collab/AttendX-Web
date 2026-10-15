@@ -225,7 +225,10 @@ tr:last-child td { border-bottom:0; }
 #camera-reader__dashboard { padding:12px;color:#dbe2f8;font-size:12px; }
 #camera-reader__dashboard button { padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:white; }
 .camera-video { width:100%;display:block;max-height:470px;object-fit:cover;border:1px solid var(--line);border-radius:13px;background:#05070e;transform:scaleX(1); }
-.face-register-video { min-height:220px;margin-top:15px; }
+.face-preview-frame { position:relative;width:100%;aspect-ratio:4/3;margin-top:15px;overflow:hidden;border:1px solid var(--line);border-radius:13px;background:#05070e;isolation:isolate; }
+.face-preview-frame .face-register-video { position:absolute;inset:0;width:100%;height:100%;min-height:0;max-height:none;margin:0;object-fit:cover;border:0;border-radius:0;background:#05070e;display:block; }
+.face-camera-status { position:absolute;inset:0;z-index:2;display:grid;place-items:center;padding:18px;background:rgba(5,7,14,.86);color:#dbe2f8;text-align:center;font-size:13px;line-height:1.6;overflow-wrap:anywhere; }
+.face-camera-status[hidden] { display:none!important; }
 .camera-help { color:var(--muted);font-size:11px;line-height:1.7;margin-top:13px; }
 .live-list-panel { min-width:0;max-height:590px;overflow:auto; }
 .live-attendee { display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line); }

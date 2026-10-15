@@ -747,23 +747,28 @@ async function startFingerprintAttendanceScan() {
     fingerprintScanActive = false;
   }
 }
-async function waitForLiveCameraFrame(video, timeoutMs = 12000) {
+async function waitForLiveCameraFrame(video, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!video.isConnected) throw new Error('The face preview was closed before the camera started.');
-    // Mobile browsers can expose video dimensions at HAVE_METADATA before
-    // readyState reaches HAVE_CURRENT_DATA. Do not leave the loading overlay
-    // blocking an otherwise-starting inline stream.
-    if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 1) return;
-    await waitMs(60);
+    // HAVE_CURRENT_DATA (readyState >= 2) ensures an actual decoded frame is
+    // available. HAVE_METADATA alone can have dimensions but still display no
+    // picture, which is too early to enable Capture Face.
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) return;
+    await waitMs(80);
   }
-  throw new Error('The camera opened, but the browser did not send a live frame to the preview box. Tap Retry Camera, allow camera access for AttendX, close other camera apps, and keep the browser tab in the foreground.');
+  throw new Error('Camera permission was granted, but no live picture reached the preview box. Keep this tab open, allow camera access for AttendX, close other camera apps, then tap Retry Camera.');
 }
 async function startFaceRegistrationCamera() {
   const user = currentUser();
   if (!user || user.role !== 'student') return toast('Only a student can register their face.');
   const video = $('#face-registration-video');
   const status = $('#face-camera-status');
+  const captureButton = document.querySelector('[data-action="capture-face"]');
+  if (captureButton) {
+    captureButton.disabled = true;
+    captureButton.textContent = 'Waiting for camera…';
+  }
   try {
     if (!video) throw new Error('Face registration preview not found.');
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -822,6 +827,10 @@ async function startFaceRegistrationCamera() {
     if (!liveTrack) throw new Error('The camera stream ended. Reopen Face Registration and allow camera access.');
 
     if (status) status.hidden = true;
+    if (captureButton) {
+      captureButton.disabled = false;
+      captureButton.textContent = 'Capture Face';
+    }
     toast('Live camera preview is ready. Face the camera in good lighting, then tap Capture Face.');
 
     // Model loading must not hide an otherwise-working camera preview on a phone.
@@ -841,6 +850,10 @@ async function startFaceRegistrationCamera() {
       try { video.pause(); } catch {}
       video.srcObject = null;
     }
+    if (captureButton) {
+      captureButton.disabled = true;
+      captureButton.textContent = 'Capture Face';
+    }
     if (status) {
       status.hidden = false;
       status.textContent = error.message || 'Could not show the live camera preview. Check camera permission for AttendX.';
@@ -851,8 +864,10 @@ async function startFaceRegistrationCamera() {
 async function captureAndSaveFace() {
   const video = $('#face-registration-video');
   if (!video || !faceRegStream) return toast('Start the camera first.');
-  if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return toast('The live camera picture is not ready yet. Wait for the preview, then capture again.');
+  const captureButton = document.querySelector('[data-action="capture-face"]');
+  if (captureButton) { captureButton.disabled = true; captureButton.textContent = 'Capturing…'; }
   try {
+    await waitForLiveCameraFrame(video, 8000);
     await loadFaceModels();
     const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.6 })).withFaceLandmarks(true).withFaceDescriptors();
     if (detections.length === 0) return toast('No clear face found. Face the camera, improve lighting, and retry.');
@@ -867,7 +882,12 @@ async function captureAndSaveFace() {
     await refreshWorkspaceData({ silent: true });
     renderApp();
     toast('Face template saved to your AttendX account. You can update it from Profile.');
-  } catch (error) { console.error(error); toast(`Could not save face data: ${error.message || error}`); }
+  } catch (error) {
+    console.error(error);
+    const captureButton = document.querySelector('[data-action="capture-face"]');
+    if (captureButton) { captureButton.disabled = false; captureButton.textContent = 'Capture Face'; }
+    toast(`Could not save face data: ${error.message || error}`);
+  }
 }
 function drawQrCodes() {
   document.querySelectorAll('canvas[data-qr-token]').forEach(canvas => {
@@ -1083,7 +1103,7 @@ function renderApp() {
 function renderModal() {
   if (!modal) return '';
   if (modal.type === 'face-register') {
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal face-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-content><div class="eyebrow">Student biometric registration</div><h2 id="modal-title">${faceRegistered?'Update face recognition':'Register face recognition'}</h2><p>Allow camera access, look straight at the camera, use good lighting, and keep only one face in view. AttendX stores a 128-number face descriptor for matching; it does not store a photo.</p><div class="face-preview-frame"><video id="face-registration-video" class="camera-video face-register-video" autoplay playsinline muted></video><div id="face-camera-status" class="face-camera-status">Connecting to camera…</div></div><div class="camera-help">Use the front camera on your phone. Keep your whole face inside the preview and wait until the live picture appears.</div><div class="notice warning" style="margin-top:12px">Face matching can make mistakes, including with similar-looking people or twins. The app rejects close/ambiguous matches and the teacher can use QR verification instead.</div><div class="modal-actions"><button class="btn secondary" type="button" data-action="retry-face-camera">Retry Camera</button><button class="btn" type="button" data-action="capture-face">Capture Face</button><button class="btn secondary" type="button" data-action="close-modal">Cancel</button></div></section></div>`;
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal face-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-content><div class="eyebrow">Student biometric registration</div><h2 id="modal-title">${faceRegistered?'Update face recognition':'Register face recognition'}</h2><p>Allow camera access, look straight at the camera, use good lighting, and keep only one face in view. AttendX stores a 128-number face descriptor for matching; it does not store a photo.</p><div class="face-preview-frame"><video id="face-registration-video" class="camera-video face-register-video" autoplay playsinline muted></video><div id="face-camera-status" class="face-camera-status">Connecting to camera…</div></div><div class="camera-help">Use the front camera on your phone. Keep your whole face inside the preview and wait until the live picture appears.</div><div class="notice warning" style="margin-top:12px">Face matching can make mistakes, including with similar-looking people or twins. The app rejects close/ambiguous matches and the teacher can use QR verification instead.</div><div class="modal-actions"><button class="btn secondary" type="button" data-action="retry-face-camera">Retry Camera</button><button class="btn" type="button" data-action="capture-face" disabled>Waiting for camera…</button><button class="btn secondary" type="button" data-action="close-modal">Cancel</button></div></section></div>`;
   }
   if (modal.type === 'checkin') {
     const schedule = scheduleById(modal.scheduleId);

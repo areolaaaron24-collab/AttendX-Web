@@ -1378,11 +1378,12 @@ async function handleClick(event) {
       case 'stop-camera': await stopCameraTools(); if ($('#camera-region')) $('#camera-region').hidden=true; toast('Camera and fingerprint reader stopped.'); break;
       case 'register-face':
         if (currentUser()?.role !== 'student') { toast('Only students can register their face.'); break; }
-        // Stop any previous stream synchronously, then request camera access in this tap.
-        void stopCameraTools();
+        // Finish cleaning up the previous camera/reader before creating the new
+        // preview. Otherwise an awaited old cleanup can close the new stream.
+        await stopCameraTools();
         modal={type:'face-register'};
         renderApp();
-        void startFaceRegistrationCamera();
+        await startFaceRegistrationCamera();
         break;
       case 'retry-face-camera':
         if (modal?.type !== 'face-register') break;

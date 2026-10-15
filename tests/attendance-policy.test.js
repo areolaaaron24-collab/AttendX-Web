@@ -86,6 +86,7 @@ test('face registration preview waits for a decoded frame before enabling captur
   assert.match(app, /data-action="capture-face" disabled>Waiting for camera…<\/button>/);
   assert.match(app, /await waitForLiveCameraFrame\(video, 8000\)/);
   assert.match(app, /data-action="retry-face-camera"/);
+  assert.match(app, /await stopCameraTools\(\);\s*modal=\{type:'face-register'\}/);
   assert.match(app, /id="face-camera-status"/);
   assert.match(app, /class="face-preview-frame"/);
   assert.match(css, /\.face-preview-frame/);

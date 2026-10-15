@@ -747,50 +747,92 @@ async function startFingerprintAttendanceScan() {
     fingerprintScanActive = false;
   }
 }
+async function waitForLiveCameraFrame(video, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!video.isConnected) throw new Error('The face preview was closed before the camera started.');
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) return;
+    await waitMs(80);
+  }
+  throw new Error('The camera opened, but no live picture reached the preview. Keep AttendX open, allow camera access in the browser settings, close other camera apps, then tap Register Face again.');
+}
 async function startFaceRegistrationCamera() {
   const user = currentUser();
   if (!user || user.role !== 'student') return toast('Only a student can register their face.');
+  const video = $('#face-registration-video');
+  const status = $('#face-camera-status');
   try {
-    const video = $('#face-registration-video'); if (!video) throw new Error('Face registration preview not found.');
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS and a browser that supports camera capture.');
+    if (!video) throw new Error('Face registration preview not found.');
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera access requires HTTPS and a browser that supports camera capture. Open the deployed AttendX HTTPS link, not an insecure HTTP address.');
+    }
+
+    // Set mobile Safari/Chrome playback flags before requesting the stream.
     video.hidden = false;
     video.muted = true;
     video.autoplay = true;
     video.playsInline = true;
+    video.setAttribute('autoplay', '');
+    video.setAttribute('muted', '');
     video.setAttribute('playsinline', '');
     video.setAttribute('webkit-playsinline', '');
     video.style.display = 'block';
-    const status = $('#face-camera-status');
-    if (status) { status.hidden = false; status.textContent = 'Requesting camera permission…'; }
+    video.style.visibility = 'visible';
+    if (status) {
+      status.hidden = false;
+      status.textContent = 'Requesting camera permission…';
+    }
+
+    // The caller starts this function directly from the Register Face tap.
+    // That is more reliable for mobile browsers than starting via setTimeout.
     faceRegStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 } }
+      video: {
+        facingMode: { ideal: 'user' },
+        width: { ideal: 640 },
+        height: { ideal: 480 }
+      }
     });
+
+    if (!video.isConnected) {
+      for (const track of faceRegStream.getTracks()) track.stop();
+      faceRegStream = null;
+      return;
+    }
     video.srcObject = faceRegStream;
-    await new Promise((resolve, reject) => {
-      if (video.readyState >= 1 && video.videoWidth > 0) { resolve(); return; }
-      const timer = window.setTimeout(() => { cleanup(); reject(new Error('Camera connected but no video preview arrived. Close other camera apps, reload the page, and allow camera access for this site.')); }, 8000);
-      const loaded = () => { cleanup(); resolve(); };
-      const cleanup = () => { clearTimeout(timer); video.removeEventListener('loadedmetadata', loaded); };
-      video.addEventListener('loadedmetadata', loaded, { once: true });
-    });
-    await video.play();
-    await new Promise((resolve, reject) => {
-      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) { resolve(); return; }
-      const timer = window.setTimeout(() => { cleanup(); reject(new Error('Camera permission was granted, but the browser did not deliver a live frame. Try closing another app using the camera and reopen Face Registration.')); }, 8000);
-      const loaded = () => { cleanup(); resolve(); };
-      const cleanup = () => { clearTimeout(timer); video.removeEventListener('loadeddata', loaded); };
-      video.addEventListener('loadeddata', loaded, { once: true });
-    });
-    if (!faceRegStream.getVideoTracks().some(track => track.readyState === 'live')) throw new Error('The camera stream ended. Reopen Face Registration and allow camera access.');
-    const statusNow = $('#face-camera-status');
-    if (statusNow) statusNow.hidden = true;
-    toast('Live camera preview ready. Face the camera in good lighting and press Capture Face.');
-    await loadFaceModels();
+
+    // Start muted inline playback immediately, then wait until actual frames arrive.
+    const playback = video.play();
+    if (playback && typeof playback.then === 'function') await playback;
+    await waitForLiveCameraFrame(video);
+
+    const liveTrack = faceRegStream.getVideoTracks().find(track => track.readyState === 'live');
+    if (!liveTrack) throw new Error('The camera stream ended. Reopen Face Registration and allow camera access.');
+
+    if (status) status.hidden = true;
+    toast('Live camera preview is ready. Face the camera in good lighting, then tap Capture Face.');
+
+    // Model loading must not hide an otherwise-working camera preview on a phone.
+    try {
+      await loadFaceModels();
+    } catch (modelError) {
+      console.error('Face model loading failed:', modelError);
+      toast('The camera preview is working, but face-recognition models could not load. Check your internet connection, then try Capture Face again.', 6000);
+    }
   } catch (error) {
-    console.error(error);
-    const status = $('#face-camera-status');
-    if (status) { status.hidden = false; status.textContent = error.message || 'Could not show the live camera preview.'; }
+    console.error('Face registration camera failed:', error);
+    if (faceRegStream) {
+      for (const track of faceRegStream.getTracks()) track.stop();
+      faceRegStream = null;
+    }
+    if (video) {
+      try { video.pause(); } catch {}
+      video.srcObject = null;
+    }
+    if (status) {
+      status.hidden = false;
+      status.textContent = error.message || 'Could not show the live camera preview. Check camera permission for AttendX.';
+    }
     toast(`Face registration camera failed: ${error.message || error}`, 6000);
   }
 }
@@ -1025,7 +1067,6 @@ function renderApp() {
   }
   if (modal) $('#app').insertAdjacentHTML('beforeend', renderModal());
   if (activePage === 'qr' && user.role === 'student') window.setTimeout(drawQrCodes, 30);
-  if (modal?.type === 'face-register') window.setTimeout(() => { if (!faceRegStream) startFaceRegistrationCamera(); }, 120);
 }
 function renderModal() {
   if (!modal) return '';
@@ -1045,7 +1086,7 @@ function renderModal() {
   }
   if (modal.type === 'fingerprint-info') {
     const schedule = scheduleById(modal.scheduleId);
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Fingerprint attendance</div><h2>Hardware connection required</h2><p>The old AttendX fingerprint module uses a dedicated USB/serial reader. Ordinary browser pages—especially on mobile—cannot directly talk to that device without a separate native bridge or a supported WebUSB/Web Serial implementation. No attendance will be recorded through this option until that integration exists.</p><p>For this web build, use the real QR pass or registered face flow instead${schedule ? ` for <b>${esc(schedule.subject)}</b>` : ''}.</p><div class="modal-actions"><button class="btn" type="button" data-action="navigate" data-page="qr">Open QR Pass</button><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" data-modal-content><div class="eyebrow">Fingerprint attendance</div><h2>Fingerprint setup needs the external reader</h2><p>This screen will not open QR. The AttendX web fingerprint option uses a physical AS608/R307 reader connected to a compatible laptop/PC through USB-to-serial; it cannot enroll a reusable fingerprint template from the phone’s built-in fingerprint sensor.</p><p>To enroll${schedule ? ` for <b>${esc(schedule.subject)}</b>` : ''}, ask your teacher to sign in on the computer connected to the reader, open <b>Attendance Center</b>, select the class, then click <b>Enroll Fingerprint</b> beside your name. The same finger is captured twice. The teacher can then use <b>Start Fingerprint Scan</b> for attendance.</p><p class="panel-sub">Use the same computer, browser profile and reader for enrollment and scanning. No fingerprint is registered from this phone window.</p><div class="modal-actions"><button class="btn secondary" type="button" data-action="close-modal">Close</button></div></section></div>`;
   }
   if (modal.type === 'class-info') {
     const schedule = scheduleById(modal.scheduleId);
@@ -1294,7 +1335,12 @@ async function handleClick(event) {
       case 'stop-camera': await stopCameraTools(); if ($('#camera-region')) $('#camera-region').hidden=true; toast('Camera and fingerprint reader stopped.'); break;
       case 'register-face':
         if (currentUser()?.role !== 'student') { toast('Only students can register their face.'); break; }
-        await stopCameraTools(); modal={type:'face-register'}; renderApp(); break;
+        // Stop any previous stream synchronously, then request camera access in this tap.
+        void stopCameraTools();
+        modal={type:'face-register'};
+        renderApp();
+        void startFaceRegistrationCamera();
+        break;
       case 'capture-face': await captureAndSaveFace(); break;
       case 'fingerprint-help': modal=null; renderApp(); toast('This browser cannot directly control the old AS608/R307 serial fingerprint reader. See README for the web-safe options.'); break;
       case 'export-csv': exportTeacherRecords(); break;

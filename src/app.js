@@ -751,10 +751,13 @@ async function waitForLiveCameraFrame(video, timeoutMs = 12000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!video.isConnected) throw new Error('The face preview was closed before the camera started.');
-    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) return;
-    await waitMs(80);
+    // Mobile browsers can expose video dimensions at HAVE_METADATA before
+    // readyState reaches HAVE_CURRENT_DATA. Do not leave the loading overlay
+    // blocking an otherwise-starting inline stream.
+    if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 1) return;
+    await waitMs(60);
   }
-  throw new Error('The camera opened, but no live picture reached the preview. Keep AttendX open, allow camera access in the browser settings, close other camera apps, then tap Register Face again.');
+  throw new Error('The camera opened, but the browser did not send a live frame to the preview box. Tap Retry Camera, allow camera access for AttendX, close other camera apps, and keep the browser tab in the foreground.');
 }
 async function startFaceRegistrationCamera() {
   const user = currentUser();
@@ -778,9 +781,17 @@ async function startFaceRegistrationCamera() {
     video.setAttribute('webkit-playsinline', '');
     video.style.display = 'block';
     video.style.visibility = 'visible';
+    video.style.position = 'absolute';
+    video.style.inset = '0';
+    video.style.width = '100%';
+    video.style.height = '100%';
+    video.style.maxHeight = 'none';
+    video.style.objectFit = 'cover';
+    video.style.transform = 'none';
+    video.style.webkitTransform = 'none';
     if (status) {
       status.hidden = false;
-      status.textContent = 'Requesting camera permission…';
+      status.textContent = 'Opening camera…';
     }
 
     // The caller starts this function directly from the Register Face tap.
@@ -801,7 +812,8 @@ async function startFaceRegistrationCamera() {
     }
     video.srcObject = faceRegStream;
 
-    // Start muted inline playback immediately, then wait until actual frames arrive.
+    // Give mobile Safari/Chrome a real inline playback request after the stream
+    // is attached; metadata may become available before the first decoded frame.
     const playback = video.play();
     if (playback && typeof playback.then === 'function') await playback;
     await waitForLiveCameraFrame(video);
@@ -1071,7 +1083,7 @@ function renderApp() {
 function renderModal() {
   if (!modal) return '';
   if (modal.type === 'face-register') {
-    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal face-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-content><div class="eyebrow">Student biometric registration</div><h2 id="modal-title">${faceRegistered?'Update face recognition':'Register face recognition'}</h2><p>Allow camera access, look straight at the camera, use good lighting, and keep only one face in view. AttendX stores a 128-number face descriptor for matching; it does not store a photo.</p><div class="face-preview-frame"><video id="face-registration-video" class="camera-video face-register-video" autoplay playsinline muted></video><div id="face-camera-status" class="face-camera-status">Connecting to camera…</div></div><div class="camera-help">Use the front camera on your phone. Keep your whole face inside the preview and wait until the live picture appears.</div><div class="notice warning" style="margin-top:12px">Face matching can make mistakes, including with similar-looking people or twins. The app rejects close/ambiguous matches and the teacher can use QR verification instead.</div><div class="modal-actions"><button class="btn" type="button" data-action="capture-face">Capture Face</button><button class="btn secondary" type="button" data-action="close-modal">Cancel</button></div></section></div>`;
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal face-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-content><div class="eyebrow">Student biometric registration</div><h2 id="modal-title">${faceRegistered?'Update face recognition':'Register face recognition'}</h2><p>Allow camera access, look straight at the camera, use good lighting, and keep only one face in view. AttendX stores a 128-number face descriptor for matching; it does not store a photo.</p><div class="face-preview-frame"><video id="face-registration-video" class="camera-video face-register-video" autoplay playsinline muted></video><div id="face-camera-status" class="face-camera-status">Connecting to camera…</div></div><div class="camera-help">Use the front camera on your phone. Keep your whole face inside the preview and wait until the live picture appears.</div><div class="notice warning" style="margin-top:12px">Face matching can make mistakes, including with similar-looking people or twins. The app rejects close/ambiguous matches and the teacher can use QR verification instead.</div><div class="modal-actions"><button class="btn secondary" type="button" data-action="retry-face-camera">Retry Camera</button><button class="btn" type="button" data-action="capture-face">Capture Face</button><button class="btn secondary" type="button" data-action="close-modal">Cancel</button></div></section></div>`;
   }
   if (modal.type === 'checkin') {
     const schedule = scheduleById(modal.scheduleId);
@@ -1340,6 +1352,13 @@ async function handleClick(event) {
         modal={type:'face-register'};
         renderApp();
         void startFaceRegistrationCamera();
+        break;
+      case 'retry-face-camera':
+        if (modal?.type !== 'face-register') break;
+        if (faceRegStream) { for (const track of faceRegStream.getTracks()) track.stop(); faceRegStream = null; }
+        const retryVideo = $('#face-registration-video');
+        if (retryVideo) { try { retryVideo.pause(); } catch {} retryVideo.srcObject = null; }
+        await startFaceRegistrationCamera();
         break;
       case 'capture-face': await captureAndSaveFace(); break;
       case 'fingerprint-help': modal=null; renderApp(); toast('This browser cannot directly control the old AS608/R307 serial fingerprint reader. See README for the web-safe options.'); break;

@@ -74,7 +74,23 @@ let fingerprintPacketQueue = [];
 let fingerprintPacketWaiters = [];
 let fingerprintScanActive = false;
 let fingerprintCapacity = 127;
-const FINGERPRINT_DEVICE_ID = 'attendx-main-reader-01';
+let fingerprintLocalDeviceId = null;
+function getFingerprintDeviceId() {
+  if (fingerprintLocalDeviceId) return fingerprintLocalDeviceId;
+  try {
+    const saved = window.localStorage.getItem('attendx-fingerprint-reader-id');
+    if (saved && /^[a-zA-Z0-9._:-]{1,64}$/.test(saved)) {
+      fingerprintLocalDeviceId = saved;
+      return saved;
+    }
+  } catch { /* storage can be disabled by browser privacy settings */ }
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  const random = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  fingerprintLocalDeviceId = `attendx-${random}`;
+  try { window.localStorage.setItem('attendx-fingerprint-reader-id', fingerprintLocalDeviceId); } catch {}
+  return fingerprintLocalDeviceId;
+}
 let liveAttendanceEntries = [];
 let cameraBusy = false;
 let faceRegistered = false;
@@ -639,7 +655,7 @@ async function registerStudentFingerprint(studentId) {
     await connectFingerprintReader();
     await stopCameraTools({ closeFingerprint: false });
     const { data: mappings, error: mappingsError } = await requireCloud().from('fingerprint_templates')
-      .select('sensor_slot,student_id').eq('device_id', FINGERPRINT_DEVICE_ID);
+      .select('sensor_slot,student_id').eq('device_id', getFingerprintDeviceId());
     if (mappingsError) throw mappingsError;
     const existing = (mappings || []).find(row => row.student_id === studentId);
     const used = new Set((mappings || []).map(row => Number(row.sensor_slot)));
@@ -665,7 +681,7 @@ async function registerStudentFingerprint(studentId) {
     expectFingerprintSuccess(await sendFingerprintCommand([0x05]), 'combining fingerprint samples');
     expectFingerprintSuccess(await sendFingerprintCommand([0x06, 0x01, (slot >> 8) & 0xFF, slot & 0xFF]), 'saving the fingerprint to the sensor');
     const { data: saved, error } = await requireCloud().functions.invoke('register-fingerprint', {
-      body: { scheduleId, studentId, deviceId: FINGERPRINT_DEVICE_ID, sensorSlot: slot }
+      body: { scheduleId, studentId, deviceId: getFingerprintDeviceId(), sensorSlot: slot }
     });
     if (error || saved?.error || !saved?.ok) throw await readFunctionError(error, saved);
     toast(`Fingerprint enrolled for ${fullName(userById(studentId))} · sensor slot ${slot}.`, 5000);
@@ -701,7 +717,7 @@ async function startFingerprintAttendanceScan() {
         if (!scannedSlots.has(slot)) {
           try {
             const { data: verified, error } = await requireCloud().functions.invoke('verify-fingerprint', {
-              body: { scheduleId, deviceId: FINGERPRINT_DEVICE_ID, sensorSlot: slot }
+              body: { scheduleId, deviceId: getFingerprintDeviceId(), sensorSlot: slot }
             });
             if (error || verified?.error || !verified?.student?.id) throw await readFunctionError(error, verified);
             const record = await saveAttendanceViaRpc(verified.student.id, scheduleId, 'FINGERPRINT');

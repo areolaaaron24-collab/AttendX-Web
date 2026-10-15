@@ -101,7 +101,7 @@ test('face registration preview waits for a decoded frame before enabling captur
 test('face scan rejects multiple visible faces and refuses ambiguous biometric matches', () => {
   assert.match(app, /detectAllFaces\(video/);
   assert.match(app, /detections\.length > 1/);
-  assert.match(app, /More than one face detected\. Only the student registering should be visible\./);
+  assert.match(app, /More than one face detected\. Keep only the student registering in view, then tap Capture Face again\./);
   assert.match(faceFunction, /scored\[1\]\.distance - scored\[0\]\.distance < 0\.025/);
   assert.match(faceFunction, /The face match is ambiguous/);
 });

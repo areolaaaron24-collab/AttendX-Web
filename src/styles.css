@@ -158,10 +158,18 @@ tr:last-child td { border-bottom:0; }
 .modal .field { margin-top:14px; }
 .modal-actions { display:flex;gap:9px;flex-wrap:wrap;margin-top:20px; }
 .modal-actions .btn { flex:1; }
+.face-modal { width:min(100%,560px);max-height:90vh;max-height:90dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain; }
+.face-modal .face-preview-frame { flex:none;min-height:200px; }
+.face-modal .face-register-video { transform:translateZ(0);-webkit-transform:translateZ(0);backface-visibility:hidden;-webkit-backface-visibility:hidden;object-position:center; }
 .toast { position:fixed;bottom:20px;left:50%;transform:translate(-50%,16px);opacity:0;pointer-events:none;z-index:50;background:#202b45;color:white;border:1px solid rgba(255,255,255,.15);padding:12px 17px;border-radius:12px;font-size:12px;box-shadow:0 10px 40px #0006;transition:.22s;max-width:calc(100vw - 30px); }
 .toast.show { opacity:1;transform:translate(-50%,0); }
 .hidden { display:none!important; }
 @media (max-width:1000px) { .app-shell { grid-template-columns:210px minmax(0,1fr); } .stats-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .content-grid,.profile-grid,.attendance-tools { grid-template-columns:1fr; } .hero { gap:25px; } }
+@media (max-width:720px) {
+  .modal-backdrop { padding:10px; }
+  .face-modal { width:100%;max-height:calc(100dvh - 20px);padding:16px; }
+  .face-modal .face-preview-frame { min-height:190px;max-height:42dvh; }
+}
 @media (max-width:720px) { .topbar { padding:13px 16px;min-height:65px; } .top-right .clock-pill { display:none; } .home-wrap { padding:42px 17px 25px; } .hero { grid-template-columns:1fr; } .hero-art { min-height:285px; } .feature-grid { grid-template-columns:1fr;gap:10px;margin-top:35px; } .app-shell { display:block; } .sidebar { position:static;border-right:0;border-bottom:1px solid var(--line);padding:9px 12px;display:flex;flex-direction:row;overflow:auto;gap:5px; } .side-label,.side-bottom { display:none; } .side-link { flex:0 0 auto;width:auto;padding:9px 11px; } .side-link span:last-child { white-space:nowrap; } .main-area { padding:23px 15px 40px; } .page-head { flex-direction:column; } .page-head h1 { font-size:25px; } .stats-grid { gap:9px; } .stat-card { padding:13px; } .stat-num { font-size:24px; } .form-grid,.inline-form,.inline-form.two { grid-template-columns:1fr; } .field.full { grid-column:auto; } .brand-sub { display:none; } .pill { padding:7px 9px; } }
 @media (prefers-reduced-motion: reduce) { *,*:before,*:after { scroll-behavior:auto!important;transition:none!important; } }
 

@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sql = readFileSync(resolve(root, 'supabase/migrations/202610150001_attendx_web.sql'), 'utf8');
+const autoQrSql = readFileSync(resolve(root, 'supabase/migrations/202610150002_auto_qr_per_enrollment.sql'), 'utf8');
 const accountRegisterFunction = readFileSync(resolve(root, 'supabase/functions/account-register/index.ts'), 'utf8');
 const qrFunction = readFileSync(resolve(root, 'supabase/functions/verify-qr/index.ts'), 'utf8');
 const faceRegisterFunction = readFileSync(resolve(root, 'supabase/functions/register-face/index.ts'), 'utf8');
@@ -54,10 +55,17 @@ test('public account registration cannot create teacher accounts without a priva
 });
 
 
-test('QR generation checks enrollment and rejects an empty token response', () => {
-  assert.match(app, /Join this class from Browse Classes before generating its QR pass/);
-  assert.match(app, /typeof token !== 'string' \|\| !token\.trim\(\)/);
-  assert.match(app, /get_or_create_student_qr_token/);
+test('every enrollment automatically creates one persistent student/class QR token', () => {
+  assert.match(autoQrSql, /create trigger enrollments_auto_create_qr\s+after insert on public\.enrollments\s+for each row\s+execute function public\.attendx_auto_create_enrollment_qr\(\)/i);
+  assert.match(autoQrSql, /new\.student_id[\s\S]*new\.schedule_id[\s\S]*ATTENDX-/i);
+  assert.match(autoQrSql, /select\s+e\.student_id,\s*e\.schedule_id[\s\S]*from public\.enrollments e[\s\S]*on conflict \(student_id, schedule_id\) do nothing/i);
+});
+
+test('student QR page displays automatic passes and has no Generate QR button', () => {
+  assert.match(app, /Your QR pass is created automatically for every class you join/);
+  assert.match(app, /data-action="refresh-qr-passes"/);
+  assert.doesNotMatch(app, /data-action="generate-qr"/);
+  assert.doesNotMatch(app, /case 'generate-qr'/);
 });
 
 test('face attendance is independent of QR token generation', () => {

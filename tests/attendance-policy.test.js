@@ -103,6 +103,8 @@ test('AS608/R307 fingerprint workflow uses live serial commands and server verif
   assert.match(app, /sendFingerprintCommand\(\[0x02, 0x02\]\)/);
   assert.match(app, /sendFingerprintCommand\(\[0x05\]\)/);
   assert.match(app, /sendFingerprintCommand\(\[0x06, 0x01/);
+  assert.match(app, /AttendX blocked duplicate fingerprint registration/);
+  assert.match(app, /This finger already matches an unmapped sensor slot/);
   assert.match(app, /functions\.invoke\('verify-fingerprint'/);
   assert.match(app, /saveAttendanceViaRpc\(verified\.student\.id, scheduleId, 'FINGERPRINT'\)/);
   assert.match(app, /data-action="enroll-fingerprint"/);

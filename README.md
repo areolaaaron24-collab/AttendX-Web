@@ -8,10 +8,10 @@ AttendX Web is a responsive browser-based port of the uploaded AttendX Python/Cu
 
 - Responsive intro animation, role selection, Student and Teacher sign-in/registration.
 - Account ID login backed by Supabase Auth; IDs are checked for uniqueness across both roles.
-- Student profile and face-template registration, class discovery filtered by course/year/section, enrollment, QR pass generation, attendance history.
+- Student profile and face-template registration, class discovery filtered by course/year/section, enrollment, automatic per-student/per-class QR pass creation on enrollment, and attendance history.
 - Teacher subject catalog, inline Add Schedule page, My Schedule, student roster/removal, attendance center, persistent live QR and face scans, no-show marking after class end, records search and CSV export.
 - Server-authoritative attendance writes through guarded Postgres RPC functions; one attendance record per student/class/Manila date.
-- Row Level Security policies, audit/login history, automatic DROPPED status after the absence threshold, and a persistent per-student/per-class QR token to match the active desktop entry point.
+- Row Level Security policies, audit/login history, automatic DROPPED status after the absence threshold, and a persistent per-student/per-class QR token automatically created by a database trigger whenever a student enrolls. Existing enrollments are backfilled by the second migration.
 - Mobile browser camera access over HTTPS; on local desktop use `http://localhost:5173`.
 - GitHub Actions workflow to build and publish the static frontend on GitHub Pages.
 
@@ -61,8 +61,8 @@ If PowerShell cannot find `npm`, install Node.js LTS and restart VS Code. This p
 
 1. Use a **new Supabase project dedicated to this web port**, or verify that the public schema is clean and take a backup first. Do not run this migration blindly over the earlier Flet/Supabase schema: `CREATE TABLE IF NOT EXISTS` will not reshape existing tables whose columns differ.
 2. Open **SQL Editor → New query** in the Supabase dashboard.
-3. Copy the complete contents of `supabase/migrations/202610150001_attendx_web.sql` into the editor and run it once on the new/empty project.
-4. Confirm the tables exist: `profiles`, `subjects`, `schedules`, `enrollments`, `attendance`, `qr_tokens`, `face_templates`, `attendance_sessions`, `login_history`, and `audit_logs`. The `attendance_sessions` helper is retained for compatibility with the older QR helper; the active `main2.py` scanner flow does not require an active session row.
+3. Prefer the CLI migration flow from the project root: `npx.cmd supabase link --project-ref ligzoiktrdwcdqpkaudr` followed by `npx.cmd supabase db push`. The migration directory includes `202610150001_attendx_web.sql` for the base schema and `202610150002_auto_qr_per_enrollment.sql` to create QR tokens for new and existing enrollments. If you use SQL Editor manually, apply both migration files in numeric order and remember that manual SQL Editor execution does not update the CLI migration history.
+4. Confirm both migrations complete, then confirm the tables exist: `profiles`, `subjects`, `schedules`, `enrollments`, `attendance`, `qr_tokens`, `face_templates`, `attendance_sessions`, `login_history`, and `audit_logs`. The `attendance_sessions` helper is retained for compatibility with the older QR helper; the active `main2.py` scanner flow does not require an active session row.
 5. Confirm that Row Level Security is enabled. The migration creates the policies and server RPCs expected by the frontend.
 6. In `.env`, set:
 
@@ -119,9 +119,9 @@ The web bundle contains only the public key. Never pass the Supabase service-rol
 - [ ] Duplicate Account ID is blocked even if the role is different.
 - [ ] Teacher can add subject and create a schedule with end time after start time.
 - [ ] Student can only find and join a schedule matching Course, Year and Section.
-- [ ] Student can generate a QR pass for the enrolled class; a different class/pass is rejected.
+- [ ] Student joins a matching class and receives a QR pass automatically for that student/class; no Generate QR button is needed. Existing enrollments receive tokens from migration 002.
 - [ ] Teacher can select one of their own active schedules, and a QR scan records once without closing the camera.
-- [ ] Duplicate scan produces ALREADY VERIFIED, not a duplicate row. A permanent class QR is retained per student/class to match the active desktop scanner.
+- [ ] Duplicate scan produces ALREADY VERIFIED, not a duplicate row. A permanent QR token is retained per student/class to match the active desktop scanner.
 - [ ] Face enrollment checks for a duplicate match before save; face scan works in good lighting when CDN models load, and unregistered/ambiguous matches are rejected.
 - [ ] Before/exactly-at-start status matches the active desktop status function; after start through 14:59 is LATE; at 15:00+ is LATE-ABSENT.
 - [ ] No-shows can be marked only after the scheduled class end; repeated no-show marking does not create duplicate attendance rows, and a later valid scan can correct a system-created ABSENT row.
@@ -141,6 +141,7 @@ src/app.js
 src/styles.css
 public/attendx-mark.svg
 supabase/migrations/202610150001_attendx_web.sql
+supabase/migrations/202610150002_auto_qr_per_enrollment.sql
 supabase/functions/account-register/index.ts
 supabase/functions/register-face/index.ts
 supabase/functions/verify-qr/index.ts

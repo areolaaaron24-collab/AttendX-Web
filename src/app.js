@@ -884,8 +884,19 @@ async function captureAndSaveFace() {
     toast('Face template saved to your AttendX account. You can update it from Profile.');
   } catch (error) {
     console.error(error);
+    const frameReady = Boolean(video?.isConnected && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
     const captureButton = document.querySelector('[data-action="capture-face"]');
-    if (captureButton) { captureButton.disabled = false; captureButton.textContent = 'Capture Face'; }
+    if (captureButton) {
+      captureButton.disabled = !frameReady;
+      captureButton.textContent = frameReady ? 'Capture Face' : 'Waiting for camera…';
+    }
+    if (!frameReady) {
+      const status = $('#face-camera-status');
+      if (status) {
+        status.hidden = false;
+        status.textContent = error.message || 'No live camera frame is available yet. Tap Retry Camera.';
+      }
+    }
     toast(`Could not save face data: ${error.message || error}`);
   }
 }

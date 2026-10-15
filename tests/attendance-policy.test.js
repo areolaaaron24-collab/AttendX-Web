@@ -80,9 +80,12 @@ test('face attendance is independent of QR token generation', () => {
   assert.match(app, /saveAttendanceViaRpc\(candidateStudentId, scheduleId, 'FACE'\)/);
 });
 
-test('face registration preview waits for a live phone-camera frame', () => {
+test('face registration preview waits for a decoded frame before enabling capture', () => {
   assert.match(app, /video\.playsInline = true/);
-  assert.match(app, /video\.videoWidth > 0/);
+  assert.match(app, /video\.readyState >= 2 && video\.videoWidth > 0 && video\.videoHeight > 0/);
+  assert.match(app, /data-action="capture-face" disabled>Waiting for camera…<\/button>/);
+  assert.match(app, /await waitForLiveCameraFrame\(video, 8000\)/);
+  assert.match(app, /data-action="retry-face-camera"/);
   assert.match(app, /id="face-camera-status"/);
   assert.match(app, /class="face-preview-frame"/);
   assert.match(css, /\.face-preview-frame/);

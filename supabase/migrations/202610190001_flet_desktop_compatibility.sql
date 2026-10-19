@@ -293,3 +293,49 @@ end;
 $$;
 revoke all on function public.record_manual_attendance(uuid, text, text) from public, anon;
 grant execute on function public.record_manual_attendance(uuid, text, text) to authenticated;
+
+
+-- Generic authenticated audit event used by the desktop UI. Business-critical
+-- attendance events are still written by their own guarded database functions.
+create or replace function public.write_audit_event(
+  p_action text,
+  p_entity_type text default null,
+  p_entity_id text default null,
+  p_details jsonb default '{}'::jsonb
+)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_role text;
+  v_id uuid;
+begin
+  v_id := auth.uid();
+  if v_id is null then raise exception 'Please log in first.'; end if;
+  v_role := public.attendx_current_role();
+  if v_role not in ('teacher','student') then raise exception 'Unsupported account role.'; end if;
+  if length(btrim(coalesce(p_action, ''))) < 1 or length(btrim(p_action)) > 120 then
+    raise exception 'Audit action is required and must be 120 characters or fewer.';
+  end if;
+  insert into public.audit_logs(actor_id, actor_role, action, details)
+    values (v_id, v_role, btrim(p_action),
+      jsonb_build_object('entity_type', p_entity_type, 'entity_id', p_entity_id)
+      || coalesce(p_details, '{}'::jsonb));
+  return jsonb_build_object('ok', true, 'action', btrim(p_action));
+end;
+$$;
+revoke all on function public.write_audit_event(text, text, text, jsonb) from public, anon;
+grant execute on function public.write_audit_event(text, text, text, jsonb) to authenticated;
+
+create or replace function public.attendx_health_check()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'Please log in first.'; end if;
+  return jsonb_build_object(
+    'ok', true,
+    'message', 'AttendX Supabase database is reachable.',
+    'role', public.attendx_current_role(),
+    'checked_at', now()
+  );
+end;
+$$;
+revoke all on function public.attendx_health_check() from public, anon;
+grant execute on function public.attendx_health_check() to authenticated;

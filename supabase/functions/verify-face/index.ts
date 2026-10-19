@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
   const { data: enrollments, error: enrollmentError } = await admin.from('enrollments').select('student_id').eq('schedule_id', scheduleId);
   if (enrollmentError || !enrollments?.length) return json({ error: 'No students are enrolled in this class.' }, 404);
   const ids = enrollments.map((row) => row.student_id);
-  const { data: templates, error: templateError } = await admin.from('face_templates').select('student_id,descriptor').in('student_id', ids);
+  const { data: templates, error: templateError } = await admin.from('face_templates').select('student_id,descriptor').in('student_id', ids).eq('model_version', 'face-api-128d-v1');
   if (templateError || !templates?.length) return json({ error: 'No enrolled students have registered face data yet.' }, 404);
 
   const sample = (descriptor as number[]).map(Number);

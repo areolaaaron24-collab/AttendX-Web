@@ -47,6 +47,9 @@ begin
   end if;
 
   v_local := timezone('Asia/Manila', now());
+  if trim(to_char(v_local::date, 'FMDay')) <> v_schedule.day then
+    raise exception 'This class is scheduled for %, not today.', v_schedule.day;
+  end if;
   v_elapsed := v_local::time - v_schedule.start_time;
   if v_elapsed < interval '0 seconds' then
     raise exception 'Attendance cannot be recorded before the scheduled start time.';

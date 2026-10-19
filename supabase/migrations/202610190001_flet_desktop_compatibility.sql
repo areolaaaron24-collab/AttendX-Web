@@ -1,4 +1,34 @@
 -- AttendX Flet compatibility additions for the existing AttendX-Web schema.
+-- Keep desktop face_recognition descriptors in their own table. The Web app's
+-- public.face_templates table stores face-api descriptors and must not be overwritten.
+create table if not exists public.flet_face_templates (
+  student_id uuid primary key references public.profiles(id) on delete cascade,
+  descriptor double precision[] not null,
+  model_version text not null default 'face_recognition-128d-v1'
+    check (model_version = 'face_recognition-128d-v1'),
+  updated_at timestamptz not null default now(),
+  constraint flet_face_descriptor_length check (cardinality(descriptor) = 128)
+);
+alter table public.flet_face_templates enable row level security;
+grant select, insert, update, delete on public.flet_face_templates to authenticated;
+drop policy if exists "Students can read own Flet face template" on public.flet_face_templates;
+create policy "Students can read own Flet face template"
+  on public.flet_face_templates for select to authenticated
+  using (student_id = auth.uid());
+drop policy if exists "Students can register own Flet face template" on public.flet_face_templates;
+create policy "Students can register own Flet face template"
+  on public.flet_face_templates for insert to authenticated
+  with check (student_id = auth.uid() and public.attendx_current_role() = 'student');
+drop policy if exists "Students can update own Flet face template" on public.flet_face_templates;
+create policy "Students can update own Flet face template"
+  on public.flet_face_templates for update to authenticated
+  using (student_id = auth.uid() and public.attendx_current_role() = 'student')
+  with check (student_id = auth.uid() and public.attendx_current_role() = 'student');
+drop policy if exists "Students can delete own Flet face template" on public.flet_face_templates;
+create policy "Students can delete own Flet face template"
+  on public.flet_face_templates for delete to authenticated
+  using (student_id = auth.uid() and public.attendx_current_role() = 'student');
+
 -- Review this migration before applying it to the shared Supabase project.
 -- This migration does not create a second schema or rename existing web tables.
 
@@ -120,7 +150,7 @@ begin
 
   return query
     select ft.student_id, ft.descriptor as embedding
-    from public.face_templates ft
+    from public.flet_face_templates ft
     join public.enrollments e on e.student_id = ft.student_id
     where e.schedule_id = p_schedule_id
       and ft.model_version = 'face_recognition-128d-v1'
